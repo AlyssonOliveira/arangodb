@@ -5,6 +5,7 @@
 !addincludedir '@CPACK_PLUGIN_PATH@/UAC-plug-in-NSIS'
 !addincludedir '@CPACK_PLUGIN_PATH@/'
 !include "OpenLink.nsh"
+!include "exitcodes.nsh"
 
 ;--------------------------------
 ; Include LogicLib for more readable code
@@ -13,6 +14,7 @@
   !include "nsDialogs.nsh"
   !include "WinMessages.nsh"
   !include "MUI2.nsh"
+  !include "StripSlashes.nsh"
 ;   !include "GetTime.nsh"
 ;--------------------------------
 ; get commandline parameters
@@ -133,15 +135,16 @@ RequestExecutionLevel highest
     ${OrIf} $0 == 1
       StrCpy $INSTDIR "@CPACK_NSIS_INSTALL_ROOT@\@CPACK_PACKAGE_INSTALL_DIRECTORY@"
     ${EndIf}
-    StrCpy $DATADIR "$APPDATA\ArangoDB"
-    StrCpy $APPDIR "$APPDATA\ArangoDB-apps"
+    StrCpy $DATADIR "$APPDATA\ArangoDB\"
+    StrCpy $APPDIR "$APPDATA\ArangoDB-apps\"
   ${Else}
     SetShellVarContext current
     ${If} $INSTDIR == ""
+    ${OrIf} $0 == 1
       StrCpy $INSTDIR "$LOCALAPPDATA\@CPACK_PACKAGE_INSTALL_DIRECTORY@"
     ${EndIf}
-    StrCpy $DATADIR "$LOCALAPPDATA\ArangoDB"
-    StrCpy $APPDIR "$LOCALAPPDATA\ArangoDB-apps"
+    StrCpy $DATADIR "$LOCALAPPDATA\ArangoDB\"
+    StrCpy $APPDIR "$LOCALAPPDATA\ArangoDB-apps\"
   ${EndIf}
 FunctionEnd
 !macroend
@@ -384,6 +387,10 @@ Var AR_RegFlags
 
   Page custom InstallOptionsPage1 InstallOptionsPage1_results
 
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE hide_install_directory
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE check_installation_directory
+  !insertmacro MUI_PAGE_DIRECTORY
+
   !define MUI_PAGE_HEADER_TEXT "Choose the database folder for @CPACK_PACKAGE_NAME@"
   !define MUI_PAGE_HEADER_SUBTEXT ""
   !define MUI_DIRECTORYPAGE_TEXT_TOP "choose the folder where @CPACK_PACKAGE_NAME@ will create its database files"
@@ -403,10 +410,6 @@ Var AR_RegFlags
   !insertmacro MUI_PAGE_DIRECTORY
 
   Page custom InstallOptionsPage2 InstallOptionsPage2_results
-
-  !define MUI_PAGE_CUSTOMFUNCTION_PRE hide_install_directory
-  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE check_installation_directory
-  !insertmacro MUI_PAGE_DIRECTORY
 
   ;Start Menu Folder Page Configuration
   !define MUI_STARTMENUPAGE_REGISTRY_ROOT "SHCTX"
@@ -628,7 +631,17 @@ Function InstallOptionsPage2
    IfSilent 0 continueUI
    Return
 continueUI:
-  ${If} $UpgradeInstall == "1"
+
+  ${If} $UpgradeInstall == "0"
+    IfFileExists "$DATADIR/databases" cleanupDBDirectory 0
+    IfFileExists "$DATADIR/journals" cleanupDBDirectory 0
+    IfFileExists "$DATADIR/rocksdb" cleanupDBDirectory 0
+    IfFileExists "$DATADIR/engine-rocksdb" cleanupDBDirectory 0
+    goto startDialog
+    cleanupDBDirectory:
+      MessageBox MB_ICONEXCLAMATION "please clean up the previously existing incomplete database directory $\r$\n$DATADIR$\r$\n before continuing with the installation!"
+    startDialog:
+  ${Else}
     StrCpy $STORAGE_ENGINE "auto"
     Return
   ${EndIf}
@@ -706,14 +719,20 @@ Function UpgradeExisting
   DetailPrint "Checking whether an existing database needs upgrade: "
   ExecWait "$INSTDIR\${SBIN_DIR}\arangod.exe --server.rest-server false --log.foreground-tty false --database.check-version" $0
   DetailPrint "done Checking whether an existing database needs upgrade: $0"
-  ${If} $0 == 1
+  ${If} $0 != 0
+  ${AndIf} $0 != 11
+    !insertmacro printExitCode $0 "failed to detect whether we need to Upgrade"
+  ${ElseIf} $0 == 11
   ${AndIf} $AUTOMATIC_UPDATE == "1"
     DetailPrint "Yes."
 
     ${If} $AUTOMATIC_BACKUP == "1"
       ; We should and we should keep a backup:
+      StrCpy $BackupPath "$DATADIR"
+      !insertmacro StripBackslash BackupPath
+      !insertmacro StripSlash BackupPath      
       ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
-      StrCpy $BackupPath "$DATADIR_$2-$1-$0_$4_$5_$6"
+      StrCpy $BackupPath "$BackupPath_$2-$1-$0_$4_$5_$6"
       CreateDirectory "$BackupPath"
       ClearErrors
       DetailPrint "Copying old database from $DATADIR to backup directory $BackupPath"
@@ -725,8 +744,8 @@ Function UpgradeExisting
     ; Now actually do the upgrade
     ExecWait "$INSTDIR\${SBIN_DIR}\arangod.exe --server.rest-server false  --log.level error --database.auto-upgrade true" $0
     DetailPrint "Done running database upgrade: $0"
-    ${If} $0 == 1
-      MessageBox MB_ICONEXCLAMATION "the Upgrade failed, please do a manual upgrade"
+    ${If} $0 != 0
+      !insertmacro printExitCode $0 "the Upgrade failed, please do a manual upgrade"
       Abort
     ${EndIf}
   ${EndIf}
@@ -742,6 +761,9 @@ Function SetDBPassword
   DetailPrint "Done initializing password: $0"
   ${If} $0 == 0
     return
+  ${Else}
+    !insertmacro printExitCode $0 "Failed to initialize database password.$\r$\nPlease check the windows event log for more details$\r$\n"
+    Abort
   ${EndIf}
   error:
     MessageBox MB_OK "Failed to initialize database password.$\r$\nPlease check the windows event log for details."
@@ -945,9 +967,9 @@ Function .onInstSuccess
 
 continueUI:
   ${If} $LaunchAfterInstall == '1'
-    ${If} $AllowGlobalInstall == "0"
+    ${If} $TRI_INSTALL_SERVICE == "0"
       ExecShell "" "$LaunchLink"
-      sleep 10
+      sleep 5000
       StrCpy $ServiceUp "1"
     ${EndIf}
     ${If} $ServiceUp == 1
@@ -1097,7 +1119,9 @@ Section "Uninstall"
     Pop $0
     DetailPrint 'Stopping ArangoDB fails - Reason: $0'
     MessageBox MB_OK 'Stopping ArangoDB fails - Reason: $0'
-
+  ${Else}
+    IfFileExists "$DATADIR/LOCK" 0 +2
+    MessageBox MB_ICONEXCLAMATION "please stop the ArangoDB before continueing with the uninstallation!"
   ${EndIf}
 Done:
   DetailPrint 'Removing files'

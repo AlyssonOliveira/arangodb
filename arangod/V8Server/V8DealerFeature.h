@@ -54,12 +54,15 @@ class V8DealerFeature final : public application_features::ApplicationFeature {
  private:
   double _gcFrequency;
   uint64_t _gcInterval;
+  double _maxContextAge;
   std::string _appPath;
   std::string _startupDirectory;
   std::vector<std::string> _moduleDirectory;
   uint64_t _nrMaxContexts;  // maximum number of contexts to create
   uint64_t _nrMinContexts; // minimum number of contexts to keep
-  uint64_t _nrInflightContexts; // number of contexts currently in creation 
+  uint64_t _nrInflightContexts; // number of contexts currently in creation
+  uint64_t _maxContextInvocations; // maximum number of V8 context invocations
+  bool _allowAdminExecute;
 
  public:
   JSLoader* startupLoader() { return &_startupLoader; };
@@ -102,11 +105,14 @@ class V8DealerFeature final : public application_features::ApplicationFeature {
   V8Context* buildContext(size_t id);
   V8Context* pickFreeContextForGc();
   void shutdownContext(V8Context* context);
+  void unblockContextsModification();
   void loadJavaScriptFileInternal(std::string const& file, V8Context* context,
                                   VPackBuilder* builder);
   bool loadJavaScriptFileInContext(TRI_vocbase_t*, std::string const& file, V8Context* context, VPackBuilder* builder);
   void enterContextInternal(TRI_vocbase_t* vocbase, V8Context* context, bool allowUseDatabase);
+  void enterLockedContext(TRI_vocbase_t* vocbase, V8Context* context, bool allowUseDatabase);
   void exitContextInternal(V8Context*);
+  void exitLockedContext(V8Context*);
   void applyContextUpdate(V8Context* context);
   void shutdownContexts();
 
@@ -126,6 +132,7 @@ class V8DealerFeature final : public application_features::ApplicationFeature {
   size_t _nrAdditionalContexts;
   size_t _minimumContexts;
   size_t _forceNrContexts;
+  size_t _contextsModificationBlockers;
 
   JSLoader _startupLoader;
 

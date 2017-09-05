@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TIMEOUT=60 # in minutes
+TIMEOUT=180 # in minutes
 
 PORTDIR=/var/tmp/ports
 mkdir -p $PORTDIR
@@ -17,8 +17,8 @@ if test "$1" == "--clean"; then
     exit
 fi
 
-port=5000
-INCR=200
+port=10000
+INCR=2000
 
 find $PORTDIR -type f -cmin +$TIMEOUT -exec rm "{}" ";"
 

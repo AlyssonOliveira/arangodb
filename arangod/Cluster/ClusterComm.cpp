@@ -33,6 +33,7 @@
 #include "Cluster/ServerState.h"
 #include "GeneralServer/AuthenticationFeature.h"
 #include "Logger/Logger.h"
+#include "RestServer/FeatureCacheFeature.h"
 #include "Scheduler/JobGuard.h"
 #include "Scheduler/SchedulerFeature.h"
 #include "SimpleHttpClient/ConnectionManager.h"
@@ -224,9 +225,9 @@ ClusterComm::ClusterComm()
       _authenticationEnabled(false),
       _jwt(""),
       _jwtAuthorization("") {
-  auto authentication = application_features::ApplicationServer::getFeature<AuthenticationFeature>("Authentication");
+  auto authentication = FeatureCacheFeature::instance()->authenticationFeature();
   TRI_ASSERT(authentication != nullptr);
-  if (authentication->isEnabled()) {
+  if (authentication->isActive()) {
     _authenticationEnabled = true;
     VPackBuilder bodyBuilder;
     {
@@ -421,7 +422,7 @@ OperationID ClusterComm::asyncRequest(
             << "cannot create connection to server '" << result->serverID
             << "' at endpoint '" << result->endpoint << "'";
         } else {
-          LOG_TOPIC(ERR, Logger::CLUSTER)
+          LOG_TOPIC(INFO, Logger::CLUSTER)
             << "cannot create connection to server '" << result->serverID
             << "' at endpoint '" << result->endpoint << "'";
         }
@@ -835,7 +836,8 @@ void ClusterCommThread::beginShutdown() {
 
 size_t ClusterComm::performRequests(std::vector<ClusterCommRequest>& requests,
                                     ClusterCommTimeout timeout, size_t& nrDone,
-                                    arangodb::LogTopic const& logTopic) {
+                                    arangodb::LogTopic const& logTopic,
+                                    bool retryOnCollNotFound) {
   if (requests.size() == 0) {
     nrDone = 0;
     return 0;
@@ -928,6 +930,23 @@ size_t ClusterComm::performRequests(std::vector<ClusterCommRequest>& requests,
         continue;
       }
       size_t index = it->second;
+
+      if (retryOnCollNotFound) {
+        // If this flag is set we treat a 404 collection not found as
+        // a CL_COMM_BACKEND_UNAVAILABLE, which leads to a retry:
+        if (res.status == CL_COMM_RECEIVED &&
+            res.answer_code == rest::ResponseCode::NOT_FOUND) {
+          VPackSlice payload = res.answer->payload();
+          VPackSlice errorNum = payload.get("errorNum");
+          if (errorNum.isInteger() &&
+              errorNum.getInt() == TRI_ERROR_ARANGO_COLLECTION_NOT_FOUND) {
+            res.status = CL_COMM_BACKEND_UNAVAILABLE;
+            // This is a fake, but it will lead to a retry. If we timeout
+            // here and now, then the customer will get this result.
+          }
+        }
+      }
+
       if (res.status == CL_COMM_RECEIVED) {
         requests[index].result = res;
         requests[index].done = true;
@@ -942,7 +961,10 @@ size_t ClusterComm::performRequests(std::vector<ClusterCommRequest>& requests,
           << requests[index].path << " with return code "
           << (int)res.answer_code;
       } else if (res.status == CL_COMM_BACKEND_UNAVAILABLE ||
-         (res.status == CL_COMM_TIMEOUT && !res.sendWasComplete)) {
+                 (res.status == CL_COMM_TIMEOUT && !res.sendWasComplete)) {
+        // Note that this case includes the refusal of a leader to accept
+        // the operation, in which we have to flush ClusterInfo:
+        ClusterInfo::instance()->loadCurrent();
         requests[index].result = res;
 
         // In this case we will retry:
@@ -960,7 +982,7 @@ size_t ClusterComm::performRequests(std::vector<ClusterCommRequest>& requests,
         LOG_TOPIC(ERR, Logger::CLUSTER) << "ClusterComm::performRequests: "
             << "got BACKEND_UNAVAILABLE or TIMEOUT from "
             << requests[index].destination << ":" << requests[index].path;
-      } else {  // a "proper error"
+      } else {  // a "proper error" which has to be returned to the client
         requests[index].result = res;
         requests[index].done = true;
         nrDone++;

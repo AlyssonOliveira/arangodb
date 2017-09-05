@@ -1,8 +1,8 @@
 #ifndef ARANGOD_GENERAL_SERVER_HTTP_COMM_TASK_H
 #define ARANGOD_GENERAL_SERVER_HTTP_COMM_TASK_H 1
 
+#include "Basics/Common.h"
 #include "GeneralServer/GeneralCommTask.h"
-
 #include "Rest/HttpResponse.h"
 
 namespace arangodb {
@@ -64,8 +64,9 @@ class HttpCommTask final : public GeneralCommTask {
   bool checkContentLength(HttpRequest*, bool expectContentLength);
 
   std::string authenticationRealm() const;
-  rest::ResponseCode authenticateRequest(HttpRequest*);
-
+  ResponseCode authenticateRequest(HttpRequest*);
+  ResponseCode handleAuthHeader(HttpRequest* request) const;
+  
  private:
   size_t _readPosition;       // current read position
   size_t _startPosition;      // start position of current request

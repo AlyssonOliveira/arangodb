@@ -16,7 +16,7 @@
   * [Coming from SQL](GettingStarted/ComingFromSql.md)
   # * [Coming from MongoDB](GettingStarted/ComingFromMongoDb.md) #TODO
 #
-* [Storage Engines](StorageEngines/README.md)
+* [Highlights](Highlights.md)
 #
 * [Scalability](Scalability/README.md)
   * [Architecture](Scalability/Architecture.md)
@@ -134,14 +134,15 @@
 #
 * [Administration](Administration/README.md)
   * [Web Interface](Administration/WebInterface/README.md)
-    * [Queries](Administration/WebInterface/AqlEditor.md)
-    * [Collections](Administration/WebInterface/Collections.md)
-    * [Cluster](Administration/WebInterface/Cluster.md)
     * [Dashboard](Administration/WebInterface/Dashboard.md)
+    * [Cluster](Administration/WebInterface/Cluster.md)
+    * [Collections](Administration/WebInterface/Collections.md)
     * [Document](Administration/WebInterface/Document.md)
-    * [Logs](Administration/WebInterface/Logs.md)
-    * [Services](Administration/WebInterface/Services.md)
+    * [Queries](Administration/WebInterface/AqlEditor.md)
     * [Graphs](Administration/WebInterface/Graphs.md)
+    * [Services](Administration/WebInterface/Services.md)
+    * [Users](Administration/WebInterface/Users.md)
+    * [Logs](Administration/WebInterface/Logs.md)
   * [ArangoDB Shell](Administration/Arangosh/README.md)
     * [Shell Output](Administration/Arangosh/Output.md)
     * [Configuration](Administration/Arangosh/Configuration.md)
@@ -151,7 +152,8 @@
   * [Arangodump](Administration/Arangodump.md)
   * [Arangorestore](Administration/Arangorestore.md)
   * [Arangoexport](Administration/Arangoexport.md)
-  * [Managing Users](Administration/ManagingUsers.md)
+  * [Managing Users](Administration/ManagingUsers/README.md)
+    * [In Arangosh](Administration/ManagingUsers/InArangosh.md)
   * [Server Configuration](Administration/Configuration/README.md)
     * [Operating System Configuration](Administration/Configuration/OperatingSystem.md)
     * [Managing Endpoints](Administration/Configuration/Endpoint.md)
@@ -166,6 +168,9 @@
     * [Asynchronous Tasks](Administration/Configuration/Asynchronous.md)
   * [Durability](Administration/Durability.md)
   * [Encryption](Administration/Encryption/README.md)
+  * [Auditing](Administration/Auditing/README.md)
+    * [Configuration](Administration/Auditing/AuditConfiguration.md)
+    * [Events](Administration/Auditing/AuditEvents.md)
   * [Replication](Administration/Replication/README.md)
     * [Asynchronous Replication](Administration/Replication/Asynchronous/README.md)
       * [Components](Administration/Replication/Asynchronous/Components.md)
@@ -190,10 +195,6 @@
     * [Upgrading to 2.3](Administration/Upgrading/Upgrading23.md)
     * [Upgrading to 2.2](Administration/Upgrading/Upgrading22.md)
 #
-* [Auditing](Auditing/README.md)
-  * [Configuration](Auditing/AuditConfiguration.md)
-  * [Events](Auditing/AuditEvents.md)
-#
 * [Troubleshooting](Troubleshooting/README.md)
   * [arangod](Troubleshooting/Arangod.md)
   * [Emergency Console](Troubleshooting/EmergencyConsole.md)
@@ -202,6 +203,7 @@
 #
 * [Architecture](Architecture/README.md)
   * [Write-ahead log](Architecture/WriteAheadLog.md)
+  * [Storage Engines](Architecture/StorageEngines.md)
 #  * [Server Internals](Architecture/ServerInternals.md)
 #
 * [Release notes](ReleaseNotes/README.md)

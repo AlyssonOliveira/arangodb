@@ -39,6 +39,7 @@
 #include "Transaction/Methods.h"
 #include "Utils/OperationCursor.h"
 #include "V8/v8-globals.h"
+#include "VocBase/ManagedDocumentResult.h"
 #include "VocBase/SingleServerTraverser.h"
 #include "VocBase/ticks.h"
 
@@ -188,6 +189,7 @@ int TraversalBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
   _posInPaths = 0;
   _usedConstant = false;
   freeCaches();
+  _traverser->done();
   return ExecutionBlock::initializeCursor(items, pos);
 }
 
@@ -374,7 +376,7 @@ AqlItemBlock* TraversalBlock::getSome(size_t,  // atLeast,
     AqlItemBlock* cur = _buffer.front();
     size_t const curRegs = cur->getNrRegs();
 
-    if (_pos == 0) {
+    if (_pos == 0 && !_traverser->hasMore()) {
       // Initial initialization
       initializePaths(cur, _pos);
     }
@@ -461,7 +463,7 @@ size_t TraversalBlock::skipSome(size_t atLeast, size_t atMost) {
   if (_done) {
     return skipped;
   }
-    
+
   if (_posInPaths < _vertices.size()) {
     skipped += (std::min)(atMost, _vertices.size() - _posInPaths);
     _posInPaths += skipped;
@@ -480,7 +482,7 @@ size_t TraversalBlock::skipSome(size_t atLeast, size_t atMost) {
     // If we get here, we do have _buffer.front()
     AqlItemBlock* cur = _buffer.front();
     initializePaths(cur, _pos);
-
+  
     while (atMost > skipped) {
       TRI_ASSERT(atMost >= skipped);
       skipped += skipPaths(atMost - skipped);
@@ -499,7 +501,7 @@ size_t TraversalBlock::skipSome(size_t atLeast, size_t atMost) {
       initializePaths(cur, _pos);
     }
   }
-
+  
   return skipped;
 
   // cppcheck-suppress style

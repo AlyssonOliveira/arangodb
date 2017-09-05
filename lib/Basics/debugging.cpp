@@ -63,7 +63,7 @@ static char* MakeValue(char const* value) {
   }
 
   char* delimited =
-      static_cast<char*>(TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, len + 3, false));
+      static_cast<char*>(TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, len + 3));
 
   if (delimited != nullptr) {
     memcpy(delimited + 1, value, len);
@@ -141,7 +141,7 @@ void TRI_AddFailurePointDebugging(char const* value) {
 
     if (FailurePoints == nullptr) {
       copy =
-          static_cast<char*>(TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, n + 1, false));
+          static_cast<char*>(TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, n + 1));
 
       if (copy == nullptr) {
         TRI_Free(TRI_UNKNOWN_MEM_ZONE, checkValue);
@@ -152,7 +152,7 @@ void TRI_AddFailurePointDebugging(char const* value) {
       copy[n] = '\0';
     } else {
       copy = static_cast<char*>(
-          TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, n + strlen(FailurePoints), false));
+          TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, n + strlen(FailurePoints)));
 
       if (copy == nullptr) {
         TRI_Free(TRI_UNKNOWN_MEM_ZONE, checkValue);
@@ -200,7 +200,7 @@ void TRI_RemoveFailurePointDebugging(char const* value) {
 
     char* copy = static_cast<char*>(
         TRI_Allocate(TRI_UNKNOWN_MEM_ZONE,
-                     strlen(FailurePoints) - strlen(checkValue) + 2, false));
+                     strlen(FailurePoints) - strlen(checkValue) + 2));
 
     if (copy == nullptr) {
       TRI_Free(TRI_UNKNOWN_MEM_ZONE, checkValue);
@@ -292,7 +292,7 @@ void TRI_GetBacktrace(std::string& btstr) {
       char* mangled_name = nullptr, * offset_begin = nullptr,
             * offset_end = nullptr;
 
-      // find parantheses and +address offset surrounding mangled name
+      // find parentheses and +address offset surrounding mangled name
       for (char* p = strings[i]; *p; ++p) {
         if (*p == '(') {
           mangled_name = p;
@@ -315,18 +315,18 @@ void TRI_GetBacktrace(std::string& btstr) {
           if (status == 0) {
             ss << stack_frames[i];
             btstr += strings[i] + std::string("() [") + ss.str() +
-                     std::string("] ") + demangled_name + std::string("\n");
+                     std::string("] ") + demangled_name + '\n';
           } else {
-            btstr += strings[i] + std::string("\n");
+            btstr += strings[i] + '\n';
           }
           TRI_SystemFree(demangled_name);
         }
       } else {
-        btstr += strings[i] + std::string("\n");
+        btstr += strings[i] + '\n';
       }
     } else {
       ss << stack_frames[i];
-      btstr += ss.str() + std::string("\n");
+      btstr += ss.str() + '\n';
     }
   }
   if (strings != nullptr) {

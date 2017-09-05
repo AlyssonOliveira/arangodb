@@ -26,13 +26,13 @@
 #include "Aql/AqlValue.h"
 #include "Aql/Ast.h"
 #include "Aql/AttributeAccessor.h"
-#include "Aql/Executor.h"
 #include "Aql/ExpressionContext.h"
 #include "Aql/BaseExpressionContext.h"
 #include "Aql/Function.h"
 #include "Aql/Functions.h"
 #include "Aql/Quantifier.h"
 #include "Aql/Query.h"
+#include "Aql/V8Executor.h"
 #include "Aql/V8Expression.h"
 #include "Aql/Variable.h"
 #include "Basics/Exceptions.h"
@@ -220,6 +220,35 @@ void Expression::replaceVariableReference(Variable const* variable,
 
   _node = _ast->replaceVariableReference(const_cast<AstNode*>(_node), variable,
                                          node);
+  invalidate();
+
+  if (_type == ATTRIBUTE_SYSTEM || _type == ATTRIBUTE_DYNAMIC) {
+    if (_built) {
+      delete _accessor;
+      _accessor = nullptr;
+      _built = false;
+    }
+    // must even set back the expression type so the expression will be analyzed
+    // again
+    _type = UNPROCESSED;
+  } else if (_type == SIMPLE) {
+    // must rebuild the expression completely, as it may have changed drastically
+    _built = false;
+    _type = UNPROCESSED;
+    _node->clearFlagsRecursive(); // recursively delete the node's flags
+  }
+
+  const_cast<AstNode*>(_node)->clearFlags();
+  _attributes.clear();
+  _hasDeterminedAttributes = false;
+}
+
+void Expression::replaceAttributeAccess(Variable const* variable,
+                                        std::vector<std::string> const& attribute) {
+  _node = _ast->clone(_node);
+  TRI_ASSERT(_node != nullptr);
+
+  _node = _ast->replaceAttributeAccess(const_cast<AstNode*>(_node), variable, attribute);
   invalidate();
 
   if (_type == ATTRIBUTE_SYSTEM || _type == ATTRIBUTE_DYNAMIC) {
@@ -558,8 +587,9 @@ AqlValue Expression::executeSimpleExpressionAttributeAccess(
   auto member = node->getMemberUnchecked(0);
   char const* name = static_cast<char const*>(node->getData());
 
-  AqlValue result = executeSimpleExpression(member, trx, mustDestroy, false);
-  AqlValueGuard guard(result, mustDestroy);
+  bool localMustDestroy;
+  AqlValue result = executeSimpleExpression(member, trx, localMustDestroy, false);
+  AqlValueGuard guard(result, localMustDestroy);
 
   return result.get(trx, std::string(name, node->getStringLength()), mustDestroy, true);
 }
@@ -657,7 +687,6 @@ AqlValue Expression::executeSimpleExpressionArray(
     auto member = node->getMemberUnchecked(i);
     bool localMustDestroy = false;
     AqlValue result = executeSimpleExpression(member, trx, localMustDestroy, false);
-
     AqlValueGuard guard(result, localMustDestroy);
     result.toVelocyPack(trx, *builder.get(), false);
   }
@@ -828,8 +857,9 @@ AqlValue Expression::executeSimpleExpressionReference(
     auto it = _variables.find(v);
 
     if (it != _variables.end()) {
+      // copy the slice we found
       mustDestroy = true;
-      return AqlValue(VPackSlice((*it).second.begin())); 
+      return AqlValue((*it).second);
     }
   }
   return _expressionContext->getVariableValue(v, doCopy, mustDestroy);
@@ -1180,13 +1210,13 @@ AqlValue Expression::executeSimpleExpressionArrayComparison(
   size_t const n = left.length();
   
   if (n == 0) {
-    if (Quantifier::IsAllOrAny(node->getMember(2))) {
+    if (Quantifier::IsAllOrNone(node->getMember(2))) {
       // [] ALL ... 
-      // [] ANY ... 
-      return AqlValue(false);
-    } else {
       // [] NONE ...
       return AqlValue(true);
+    } else {
+      // [] ANY ...
+      return AqlValue(false);
     }
   }
 
@@ -1302,6 +1332,7 @@ AqlValue Expression::executeSimpleExpressionTernary(
 AqlValue Expression::executeSimpleExpressionExpansion(
     AstNode const* node, transaction::Methods* trx, bool& mustDestroy) {
   TRI_ASSERT(node->numMembers() == 5);
+  mustDestroy = false;
 
   // LIMIT
   int64_t offset = 0;
@@ -1310,17 +1341,16 @@ AqlValue Expression::executeSimpleExpressionExpansion(
   auto limitNode = node->getMember(3);
 
   if (limitNode->type != NODE_TYPE_NOP) {
+    bool localMustDestroy;
     AqlValue subOffset =
-        executeSimpleExpression(limitNode->getMember(0), trx, mustDestroy, false);
+        executeSimpleExpression(limitNode->getMember(0), trx, localMustDestroy, false);
     offset = subOffset.toInt64(trx);
-    if (mustDestroy) { subOffset.destroy(); }
+    if (localMustDestroy) { subOffset.destroy(); }
 
-    AqlValue subCount = executeSimpleExpression(limitNode->getMember(1), trx, mustDestroy, false);
+    AqlValue subCount = executeSimpleExpression(limitNode->getMember(1), trx, localMustDestroy, false);
     count = subCount.toInt64(trx);
-    if (mustDestroy) { subCount.destroy(); }
+    if (localMustDestroy) { subCount.destroy(); }
   }
-    
-  mustDestroy = false;
 
   if (offset < 0 || count <= 0) {
     // no items to return... can already stop here

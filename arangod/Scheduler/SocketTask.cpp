@@ -53,8 +53,8 @@ SocketTask::SocketTask(arangodb::EventLoop loop,
       _connectionStatistics(nullptr),
       _connectionInfo(std::move(connectionInfo)),
       _readBuffer(TRI_UNKNOWN_MEM_ZONE, READ_BLOCK_SIZE + 1, false),
+      _stringBuffers{_stringBuffersArena},
       _writeBuffer(nullptr, nullptr),
-      _strand(socket->_ioService),
       _peer(std::move(socket)),
       _keepAliveTimeout(static_cast<long>(keepAliveTimeout * 1000)),
       _keepAliveTimer(_peer->_ioService, _keepAliveTimeout),
@@ -80,8 +80,9 @@ SocketTask::~SocketTask() {
     _connectionStatistics = nullptr;
   }
 
+  MUTEX_LOCKER(locker, _lock);
   boost::system::error_code err;
-
+      
   if (_keepAliveTimerActive) {
     _keepAliveTimer.cancel(err);
   }
@@ -90,7 +91,14 @@ SocketTask::~SocketTask() {
     LOG_TOPIC(ERR, Logger::COMMUNICATION) << "unable to cancel _keepAliveTimer";
   }
 
-  _peer->close(err);
+  if (_peer) {
+    _peer->close(err);
+  }
+
+  // delete all string buffers we have allocated
+  for (auto& it : _stringBuffers) {
+    delete it;
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -124,9 +132,11 @@ void SocketTask::start() {
 // --SECTION--                                                 protected methods
 // -----------------------------------------------------------------------------
 
-// will acquire the _writeLock
+// caller must hold the _lock
 void SocketTask::addWriteBuffer(WriteBuffer& buffer) {
-  if (_closedSend) {
+  _lock.assertLockedByCurrentThread();
+
+  if (_closedSend || _abandoned) {
     buffer.release();
     return;
   }
@@ -135,12 +145,10 @@ void SocketTask::addWriteBuffer(WriteBuffer& buffer) {
     auto self = shared_from_this();
 
     _loop._scheduler->post([self, this]() {
-      MUTEX_LOCKER(locker, _readLock);
+      MUTEX_LOCKER(locker, _lock);
       processAll();
     });
   }
-
-  MUTEX_LOCKER(locker, _writeLock);
 
   if (!buffer.empty()) {
     if (!_writeBuffer.empty()) {
@@ -154,8 +162,10 @@ void SocketTask::addWriteBuffer(WriteBuffer& buffer) {
   writeWriteBuffer();
 }
 
-// caller must hold the _writeLock
+// caller must hold the _lock
 void SocketTask::writeWriteBuffer() {
+  _lock.assertLockedByCurrentThread();
+
   if (_writeBuffer.empty()) {
     return;
   }
@@ -206,9 +216,13 @@ void SocketTask::writeWriteBuffer() {
   auto self = shared_from_this();
   _peer->asyncWrite(boost::asio::buffer(_writeBuffer._buffer->begin() + written,
                                         total - written),
-                    _strand.wrap([self, this](const boost::system::error_code& ec,
+                    [self, this](const boost::system::error_code& ec,
                                  std::size_t transferred) {
-                      MUTEX_LOCKER(locker, _writeLock);
+                      MUTEX_LOCKER(locker, _lock);
+
+                      if (_abandoned) {
+                        return;
+                      }
 
                       RequestStatistics::ADD_SENT_BYTES(
                           _writeBuffer._statistics, transferred);
@@ -220,18 +234,70 @@ void SocketTask::writeWriteBuffer() {
                       } else {
                         if (completedWriteBuffer()) {
                           _loop._scheduler->post([self, this]() {
-                            MUTEX_LOCKER(locker, _writeLock);
+                            MUTEX_LOCKER(locker, _lock);
                             writeWriteBuffer();
                           });
                         }
                       }
-                    }));
+                    });
+}
+    
+StringBuffer* SocketTask::leaseStringBuffer(size_t length) {
+  _lock.assertLockedByCurrentThread();
+
+  StringBuffer* buffer = nullptr;
+  if (!_stringBuffers.empty()) {
+    buffer = _stringBuffers.back();
+    TRI_ASSERT(buffer != nullptr);
+    TRI_ASSERT(buffer->length() == 0);
+
+    size_t const n = buffer->capacity();
+    if (n < length) {
+      if (buffer->reserve(length) != TRI_ERROR_NO_ERROR) {
+        THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+      }
+    }
+    _stringBuffers.pop_back();
+  } else {
+    buffer = new StringBuffer(TRI_UNKNOWN_MEM_ZONE, length, false);
+  }
+
+  TRI_ASSERT(buffer != nullptr);
+  
+  // still check for safety reasons
+  if (buffer->capacity() >= length) {
+    return buffer;
+  }
+
+  delete buffer;
+  THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
+}
+  
+void SocketTask::returnStringBuffer(StringBuffer* buffer) {
+  TRI_ASSERT(buffer != nullptr);
+  _lock.assertLockedByCurrentThread();
+
+  if (_stringBuffers.size() > 4 || buffer->capacity() >= 4 * 1024 * 1024) {
+    // don't keep too many buffers around and don't hog too much memory
+    delete buffer;
+    return;
+  }
+
+  try {
+    buffer->reset();
+    _stringBuffers.emplace_back(buffer);
+  } catch (...) {
+    delete buffer;
+  }
 }
 
-// caller must hold the _writeLock
+// caller must hold the _lock
 bool SocketTask::completedWriteBuffer() {
+  _lock.assertLockedByCurrentThread();
+
   RequestStatistics::SET_WRITE_END(_writeBuffer._statistics);
-  _writeBuffer.release();
+  // try to recycle the string buffer
+  _writeBuffer.release(this);
 
   if (_writeBuffers.empty()) {
     if (_closeRequested) {
@@ -247,14 +313,16 @@ bool SocketTask::completedWriteBuffer() {
   return true;
 }
 
-// caller must not hold the _writeLock
+// caller must not hold the _lock
 void SocketTask::closeStream() {
-  MUTEX_LOCKER(locker, _writeLock);
+  MUTEX_LOCKER(locker, _lock);
   closeStreamNoLock();
 }
 
-// caller must hold the _writeLock
+// caller must hold the _lock
 void SocketTask::closeStreamNoLock() {
+  _lock.assertLockedByCurrentThread();
+
   boost::system::error_code err;
 
   bool closeSend = !_closedSend;
@@ -273,17 +341,17 @@ void SocketTask::closeStreamNoLock() {
 // --SECTION--                                                   private methods
 // -----------------------------------------------------------------------------
 
-// will acquire the _readLock
+// will acquire the _lock
 void SocketTask::addToReadBuffer(char const* data, std::size_t len) {
-  MUTEX_LOCKER(locker, _readLock);
+  MUTEX_LOCKER(locker, _lock);
 
   LOG_TOPIC(DEBUG, Logger::COMMUNICATION) << std::string(data, len);
   _readBuffer.appendText(data, len);
 }
 
-// will acquire the _writeLock
+// caller must hold the _lock
 void SocketTask::resetKeepAlive() {
-  MUTEX_LOCKER(locker, _writeLock);
+  _lock.assertLockedByCurrentThread();
 
   if (_useKeepAliveTimer) {
     boost::system::error_code err;
@@ -310,9 +378,21 @@ void SocketTask::resetKeepAlive() {
   }
 }
 
-// will acquire the _writeLock
+// caller must hold the _lock
+// abandon the task. if the task was already abandoned, this
+// method returns false. if abandoing was successful, this
+// method returns true
+bool SocketTask::abandon() {
+  _lock.assertLockedByCurrentThread();
+
+  bool old = _abandoned;
+  _abandoned = true;
+  return !old;
+}
+
+// caller must hold the _lock
 void SocketTask::cancelKeepAlive() {
-  MUTEX_LOCKER(locker, _writeLock);
+  _lock.assertLockedByCurrentThread();
 
   if (_useKeepAliveTimer && _keepAliveTimerActive) {
     boost::system::error_code err;
@@ -321,19 +401,23 @@ void SocketTask::cancelKeepAlive() {
   }
 }
 
-// caller must hold the _readLock
+// caller must hold the _lock
 bool SocketTask::reserveMemory() {
+  _lock.assertLockedByCurrentThread();
+
   if (_readBuffer.reserve(READ_BLOCK_SIZE + 1) == TRI_ERROR_OUT_OF_MEMORY) {
     LOG_TOPIC(WARN, arangodb::Logger::FIXME) << "out of memory while reading from client";
-    closeStream();
+    closeStreamNoLock();
     return false;
   }
 
   return true;
 }
 
-// caller must hold the _readLock
+// caller must hold the _lock
 bool SocketTask::trySyncRead() {
+  _lock.assertLockedByCurrentThread();
+
   boost::system::error_code err;
 
   if (_abandoned) {
@@ -371,11 +455,13 @@ bool SocketTask::trySyncRead() {
   return true;
 }
 
-// caller must hold the _readLock
+// caller must hold the _lock
 bool SocketTask::processAll() {
-  double start_time = StatisticsFeature::time();
+  _lock.assertLockedByCurrentThread();
 
-  while (processRead(start_time)) {
+  double startTime = StatisticsFeature::time();
+
+  while (processRead(startTime)) {
     if (_abandoned) {
       return false;
     }
@@ -394,9 +480,9 @@ bool SocketTask::processAll() {
   return true;
 }
 
-// will acquire the _readLock
+// will acquire the _lock
 void SocketTask::asyncReadSome() {
-  MUTEX_LOCKER(locker, _readLock);
+  MUTEX_LOCKER(locker, _lock);
     
   if (_abandoned) {
     return;
@@ -429,12 +515,12 @@ void SocketTask::asyncReadSome() {
       LOG_TOPIC(DEBUG, Logger::COMMUNICATION) << "i/o stream failed with: "
         << err.what();
 
-      closeStream();
+      closeStreamNoLock();
       return;
     } catch (...) {
       LOG_TOPIC(DEBUG, Logger::COMMUNICATION) << "general error on stream";
 
-      closeStream();
+      closeStreamNoLock();
       return;
     }
   }
@@ -454,17 +540,21 @@ void SocketTask::asyncReadSome() {
 
     _peer->asyncRead(
         boost::asio::buffer(_readBuffer.end(), READ_BLOCK_SIZE),
-        _strand.wrap([self, this](const boost::system::error_code& ec,
+        [self, this](const boost::system::error_code& ec,
                      std::size_t transferred) {
           JobGuard guard(_loop);
           guard.work();
 
-          MUTEX_LOCKER(locker, _readLock);
+          MUTEX_LOCKER(locker, _lock);
+
+          if (_abandoned) {
+            return;
+          }
 
           if (ec) {
             LOG_TOPIC(DEBUG, Logger::COMMUNICATION)
                 << "read on stream failed with: " << ec.message();
-            closeStream();
+            closeStreamNoLock();
           } else {
             _readBuffer.increaseLength(transferred);
 
@@ -474,6 +564,6 @@ void SocketTask::asyncReadSome() {
 
             compactify();
           }
-        }));
+        });
   }
 }

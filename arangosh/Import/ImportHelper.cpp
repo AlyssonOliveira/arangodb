@@ -162,6 +162,8 @@ ImportHelper::ImportHelper(ClientFeature const* client,
       _collectionName(),
       _lineBuffer(TRI_UNKNOWN_MEM_ZONE),
       _outputBuffer(TRI_UNKNOWN_MEM_ZONE),
+      _firstLine(""),
+      _columnNames(),
       _hasError(false) {
   for (uint32_t i = 0; i < threadCount; i++) {
     auto http = client->createHttpClient(endpoint, params);
@@ -173,7 +175,7 @@ ImportHelper::ImportHelper(ClientFeature const* client,
   while (true) {
     uint32_t numReady = 0;
     for (auto const& t : _senderThreads) {
-      if (t->isReady()) {
+      if (t->isIdle()) {
         numReady++;
       }
     }
@@ -200,7 +202,7 @@ bool ImportHelper::importDelimited(std::string const& collectionName,
   _firstLine = "";
   _outputBuffer.clear();
   _lineBuffer.clear();
-  _errorMessage = "";
+  _errorMessages.clear();
   _hasError = false;
 
   // read and convert
@@ -217,7 +219,7 @@ bool ImportHelper::importDelimited(std::string const& collectionName,
     fd = TRI_TRACKED_OPEN_FILE(fileName.c_str(), O_RDONLY | TRI_O_CLOEXEC);
 
     if (fd < 0) {
-      _errorMessage = TRI_LAST_ERROR_STR;
+      _errorMessages.push_back(TRI_LAST_ERROR_STR);
       return false;
     }
   }
@@ -235,8 +237,7 @@ bool ImportHelper::importDelimited(std::string const& collectionName,
     if (fd != STDIN_FILENO) {
       TRI_TRACKED_CLOSE_FILE(fd);
     }
-
-    _errorMessage = "out of memory";
+    _errorMessages.push_back("out of memory");
     return false;
   }
 
@@ -270,7 +271,7 @@ bool ImportHelper::importDelimited(std::string const& collectionName,
       if (fd != STDIN_FILENO) {
         TRI_TRACKED_CLOSE_FILE(fd);
       }
-      _errorMessage = TRI_LAST_ERROR_STR;
+      _errorMessages.push_back(TRI_LAST_ERROR_STR);
       return false;
     } else if (n == 0) {
       // we have read the entire file
@@ -311,7 +312,7 @@ bool ImportHelper::importJson(std::string const& collectionName,
   _collectionName = collectionName;
   _firstLine = "";
   _outputBuffer.clear();
-  _errorMessage = "";
+  _errorMessages.clear();
   _hasError = false;
 
   // read and convert
@@ -328,7 +329,7 @@ bool ImportHelper::importJson(std::string const& collectionName,
     fd = TRI_TRACKED_OPEN_FILE(fileName.c_str(), O_RDONLY | TRI_O_CLOEXEC);
 
     if (fd < 0) {
-      _errorMessage = TRI_LAST_ERROR_STR;
+      _errorMessages.push_back(TRI_LAST_ERROR_STR);
       return false;
     }
   }
@@ -350,7 +351,7 @@ bool ImportHelper::importJson(std::string const& collectionName,
   while (!_hasError) {
     // reserve enough room to read more data
     if (_outputBuffer.reserve(BUFFER_SIZE) == TRI_ERROR_OUT_OF_MEMORY) {
-      _errorMessage = TRI_errno_string(TRI_ERROR_OUT_OF_MEMORY);
+      _errorMessages.push_back(TRI_errno_string(TRI_ERROR_OUT_OF_MEMORY));
 
       if (fd != STDIN_FILENO) {
         TRI_TRACKED_CLOSE_FILE(fd);
@@ -362,7 +363,7 @@ bool ImportHelper::importJson(std::string const& collectionName,
     ssize_t n = TRI_READ(fd, _outputBuffer.end(), BUFFER_SIZE - 1);
 
     if (n < 0) {
-      _errorMessage = TRI_LAST_ERROR_STR;
+      _errorMessages.push_back(TRI_LAST_ERROR_STR);
       if (fd != STDIN_FILENO) {
         TRI_TRACKED_CLOSE_FILE(fd);
       }
@@ -398,10 +399,9 @@ bool ImportHelper::importJson(std::string const& collectionName,
         if (fd != STDIN_FILENO) {
           TRI_TRACKED_CLOSE_FILE(fd);
         }
-        _errorMessage =
-            "import file is too big. please increase the value of --batch-size "
-            "(currently " +
-            StringUtils::itoa(_maxUploadSize) + ")";
+        _errorMessages.push_back("import file is too big. please increase the value of --batch-size "
+                                 "(currently " +
+                                 StringUtils::itoa(_maxUploadSize) + ")");
         return false;
       }
 
@@ -510,29 +510,36 @@ void ImportHelper::ProcessCsvAdd(TRI_csv_parser_t* parser, char const* field,
                                  size_t fieldLength, size_t row, size_t column,
                                  bool escaped) {
   auto importHelper = static_cast<ImportHelper*>(parser->_dataAdd);
-
-  if (importHelper->getRowsRead() < importHelper->getRowsToSkip()) {
-    return;
-  }
-
   importHelper->addField(field, fieldLength, row, column, escaped);
 }
 
 void ImportHelper::addField(char const* field, size_t fieldLength, size_t row,
                             size_t column, bool escaped) {
+  if (_rowsRead < _rowsToSkip) {
+    return;
+  }
+  // we read the first line if we get here
+  if (row == _rowsToSkip) {
+    std::string name = std::string(field, fieldLength);
+    if (fieldLength > 0) { // translate field
+      auto it = _translations.find(name);
+      if (it != _translations.end()) {
+        field = (*it).second.c_str();
+        fieldLength = (*it).second.size();
+      }
+    }
+    _columnNames.push_back(std::move(name));
+  }
+  // skip removable attributes
+  if (!_removeAttributes.empty() &&
+      _removeAttributes.find(_columnNames[column]) != _removeAttributes.end()) {
+    return;
+  }
+  
   if (column > 0) {
     _lineBuffer.appendChar(',');
   }
-
-  if (row == _rowsToSkip && fieldLength > 0) {
-    // translate field
-    auto it = _translations.find(std::string(field, fieldLength));
-    if (it != _translations.end()) {
-      field = (*it).second.c_str();
-      fieldLength = (*it).second.size();
-    }
-  }
-
+  
   if (_keyColumn == -1 && row == _rowsToSkip && fieldLength == 4 &&
       memcmp(field, "_key", 4) == 0) {
     _keyColumn = column;
@@ -717,9 +724,21 @@ bool ImportHelper::checkCreateCollection() {
     return true;
   }
 
-  LOG_TOPIC(ERR, arangodb::Logger::FIXME)
-      << "unable to create collection '" << _collectionName
-      << "', server returned status code: " << static_cast<int>(code);
+  std::shared_ptr<velocypack::Builder> bodyBuilder(result->getBodyVelocyPack());
+  velocypack::Slice error = bodyBuilder->slice();
+  if (!error.isNone()) {
+    auto errorNum = error.get("errorNum").getUInt();
+    auto errorMsg = error.get("errorMessage").copyString();
+    LOG_TOPIC(ERR, arangodb::Logger::FIXME)
+        << "unable to create collection '" << _collectionName
+        << "', server returned status code: " << static_cast<int>(code)
+        << "; error [" << errorNum << "] " << errorMsg;
+  } else {
+    LOG_TOPIC(ERR, arangodb::Logger::FIXME)
+        << "unable to create collection '" << _collectionName
+        << "', server returned status code: " << static_cast<int>(code)
+        << "; server returned message: " << result->getBody();
+  }
   _hasError = true;
   return false;
 }
@@ -750,7 +769,7 @@ bool ImportHelper::truncateCollection() {
       << "unable to truncate collection '" << _collectionName
       << "', server returned status code: " << static_cast<int>(code);
   _hasError = true;
-  _errorMessage = "Unable to overwrite collection";
+  _errorMessages.push_back("Unable to overwrite collection");
   return false;
 }
 
@@ -832,7 +851,7 @@ SenderThread* ImportHelper::findSender() {
     for (auto const& t : _senderThreads) {
       if (t->hasError()) {
         _hasError = true;
-        _errorMessage = t->errorMessage();
+        _errorMessages.push_back(t->errorMessage());
         return nullptr;
       } else if (t->isIdle()) {
         return t.get();
@@ -848,13 +867,17 @@ void ImportHelper::waitForSenders() {
     uint32_t numIdle = 0;
     for (auto const& t : _senderThreads) {
       if (t->isDone()) {
+        if (t->hasError()) {
+          _hasError = true;
+          _errorMessages.push_back(t->errorMessage());
+        }
         numIdle++;
       }
     }
     if (numIdle == _senderThreads.size()) {
       return;
     }
-    usleep(100000);
+    usleep(10000);
   }
 }
 }

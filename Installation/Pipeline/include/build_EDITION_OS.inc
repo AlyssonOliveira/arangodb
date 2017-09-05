@@ -1,5 +1,3 @@
-#!/bin/bash
-
 concurrency=$1
 edition=$2
 os=$3
@@ -8,6 +6,7 @@ ENTERPRISE=""
 type="build"
 
 if [ "$edition" == community ]; then
+    ENTERPRISE="-DUSE_ENTERPRISE=Off"
     type="${type}_community"
 elif [ "$edition" == enterprise ]; then
     type="${type}_enterprise"
@@ -19,8 +18,10 @@ fi
 
 if [ "$os" == linux ]; then
     type="${type}_linux"
+    load=40
 elif [ "$os" == mac ]; then
     type="${type}_mac"
+    load=10
 else
     echo "$0: unknown os '$os', expecting 'linux' or 'mac'"
     exit 1
@@ -30,12 +31,15 @@ echo "CONCURRENY: $concurrency"
 echo "HOST: `hostname`"
 echo "PWD: `pwd`"
 
-rm -rf log-output/$type.log
+mkdir -p build
+
+rm -rf log-output
 mkdir -p log-output
+touch log-output/build.log
 
 (
-    mkdir -p build-$edition
-    cd build-$edition
+    set -eo pipefail
+    cd build
 
     echo "`date +%T` configuring..."
     CXXFLAGS=-fno-omit-frame-pointer \
@@ -46,20 +50,10 @@ mkdir -p log-output
             -DUSE_FAILURE_TESTS=On \
             -DDEBUG_SYNC_REPLICATION=On \
             $ENTERPRISE \
-            .. > ../log-output/$type.log 2>&1 || exit 1
+            ..  2>&1 | tee ../log-output/build.log
 
     echo "`date +%T` building..."
-    make -j$concurrency >> ../log-output/$type.log 2>&1 || exit 1
+    make -j $concurrency -l $load 2>&1 | tee -a ../log-output/build.log
 ) || exit 1
-
-# copy binaries to preserve them
-echo "`date +%T` copying..."
-
-rm -rf build
-mkdir -p build/tests
-
-cp -a build-$edition/bin                 build
-cp -a build-$edition/etc                 build
-cp -a build-$edition/tests/arangodbtests build/tests
 
 echo "`date +%T` done..."

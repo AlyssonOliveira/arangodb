@@ -439,10 +439,6 @@ bool TraverserOptions::evaluateEdgeExpression(arangodb::velocypack::Slice edge,
                                               StringRef vertexId,
                                               uint64_t depth,
                                               size_t cursorId) const {
-  if (_isCoordinator) {
-    // The Coordinator never checks conditions. The DBServer is responsible!
-    return true;
-  }
   arangodb::aql::Expression* expression = nullptr;
 
   auto specific = _depthLookupInfo.find(depth);
@@ -480,6 +476,9 @@ bool TraverserOptions::evaluateEdgeExpression(arangodb::velocypack::Slice edge,
     idNode->stealComputedValue();
     idNode->setStringValue(vertexId.data(), vertexId.length());
   }
+  if (edge.isExternal()) {
+    edge = edge.resolveExternal();
+  }
   return evaluateExpression(expression, edge);
 }
 
@@ -495,6 +494,9 @@ bool TraverserOptions::evaluateVertexExpression(
     expression = _baseVertexExpression;
   }
 
+  if (vertex.isExternal()) {
+    vertex = vertex.resolveExternal();
+  }
   return evaluateExpression(expression, vertex);
 }
 

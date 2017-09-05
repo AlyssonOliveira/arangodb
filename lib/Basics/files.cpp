@@ -29,6 +29,7 @@
 #endif
 
 #include "Basics/directories.h"
+#include "Basics/Exceptions.h"
 #include "Basics/FileUtils.h"
 #include "Basics/Mutex.h"
 #include "Basics/MutexLocker.h"
@@ -468,7 +469,7 @@ int TRI_CreateRecursiveDirectory(char const* path, long& systemError,
   char* copy;
   char* p;
   char* s;
-
+          
   int res = TRI_ERROR_NO_ERROR;
   p = s = copy = TRI_DuplicateString(path);
 
@@ -485,7 +486,8 @@ int TRI_CreateRecursiveDirectory(char const* path, long& systemError,
         *p = '\0';
         res = TRI_CreateDirectory(copy, systemError, systemErrorStr);
 
-        if ((res == TRI_ERROR_FILE_EXISTS) || (res == TRI_ERROR_NO_ERROR)) {
+        if (res == TRI_ERROR_FILE_EXISTS || res == TRI_ERROR_NO_ERROR) {
+          systemErrorStr.clear();
           res = TRI_ERROR_NO_ERROR;
           *p = TRI_DIR_SEPARATOR_CHAR;
           s = p + 1;
@@ -498,15 +500,19 @@ int TRI_CreateRecursiveDirectory(char const* path, long& systemError,
     p++;
   }
 
-  if (((res == TRI_ERROR_FILE_EXISTS) || (res == TRI_ERROR_NO_ERROR)) &&
+  if ((res == TRI_ERROR_FILE_EXISTS || res == TRI_ERROR_NO_ERROR) &&
       (p - s > 0)) {
     res = TRI_CreateDirectory(copy, systemError, systemErrorStr);
+        
     if (res == TRI_ERROR_FILE_EXISTS) {
+      systemErrorStr.clear();
       res = TRI_ERROR_NO_ERROR;
     }
   }
 
   TRI_Free(TRI_CORE_MEM_ZONE, copy);
+
+  TRI_ASSERT(res != TRI_ERROR_FILE_EXISTS);
 
   return res;
 }
@@ -518,12 +524,11 @@ int TRI_CreateRecursiveDirectory(char const* path, long& systemError,
 int TRI_CreateDirectory(char const* path, long& systemError,
                         std::string& systemErrorStr) {
   TRI_ERRORBUF;
-  int res;
 
   // reset error flag
   TRI_set_errno(TRI_ERROR_NO_ERROR);
 
-  res = TRI_MKDIR(path, 0777);
+  int res = TRI_MKDIR(path, 0777);
 
   if (res == TRI_ERROR_NO_ERROR) {
     return res;
@@ -533,7 +538,7 @@ int TRI_CreateDirectory(char const* path, long& systemError,
   TRI_SYSTEM_ERROR();
   res = errno;
   if (res != TRI_ERROR_NO_ERROR) {
-    systemErrorStr = std::string("Failed to create directory [") + path + "] " +
+    systemErrorStr = std::string("failed to create directory '") + path + "': " +
                      TRI_GET_ERRORBUF;
     systemError = res;
 
@@ -1266,10 +1271,17 @@ int TRI_VerifyLockFile(char const* filename) {
     return TRI_ERROR_NO_ERROR;
   }
 
-  int fd = TRI_TRACKED_OPEN_FILE(filename, O_RDONLY | TRI_O_CLOEXEC);
+  int fd = TRI_TRACKED_OPEN_FILE(filename, O_RDWR | TRI_O_CLOEXEC);
 
   if (fd < 0) {
-    return TRI_ERROR_NO_ERROR;
+    TRI_set_errno(TRI_ERROR_SYS_ERROR);
+    LOG_TOPIC(WARN, arangodb::Logger::FIXME) << "cannot open lockfile '" << filename << "' in write mode: " << TRI_last_error();
+    
+    if (errno == EACCES) {
+      return TRI_ERROR_CANNOT_WRITE_FILE;
+    }
+
+    return TRI_ERROR_INTERNAL;
   }
 
   char buffer[128];
@@ -1323,7 +1335,7 @@ int TRI_VerifyLockFile(char const* filename) {
   lock.l_whence = SEEK_SET;
   // try to lock pid file
   int canLock = fcntl(fd, F_SETLK, &lock);  // Exclusive (write) lock
-
+      
   // file was not yet locked; could be locked
   if (canLock == 0) {
     lock.l_type = F_UNLCK;
@@ -1342,12 +1354,13 @@ int TRI_VerifyLockFile(char const* filename) {
   }
 
   canLock = errno;
+  TRI_set_errno(TRI_ERROR_SYS_ERROR);
 
   // from man 2 fcntl: "If a conflicting lock is held by another process, 
   // this call returns -1 and sets errno to EACCES or EAGAIN."
   if (canLock != EACCES && canLock != EAGAIN) {
     LOG_TOPIC(WARN, arangodb::Logger::FIXME) << "fcntl on lockfile '" << filename
-              << "' failed: " << TRI_errno_string(canLock) 
+              << "' failed: " << TRI_last_error()
               << ". a possible reason is that the filesystem does not support file-locking";
   }
 #endif
@@ -1547,7 +1560,7 @@ char* TRI_GetAbsolutePath(char const* fileName,
     // we do not require a backslash
     result = static_cast<char*>(
         TRI_Allocate(TRI_UNKNOWN_MEM_ZONE,
-                     (cwdLength + fileLength + 1) * sizeof(char), false));
+                     (cwdLength + fileLength + 1) * sizeof(char)));
     if (result == nullptr) {
       return nullptr;
     }
@@ -1558,7 +1571,7 @@ char* TRI_GetAbsolutePath(char const* fileName,
     // we do require a backslash
     result = static_cast<char*>(
         TRI_Allocate(TRI_UNKNOWN_MEM_ZONE,
-                     (cwdLength + fileLength + 2) * sizeof(char), false));
+                     (cwdLength + fileLength + 2) * sizeof(char)));
     if (result == nullptr) {
       return nullptr;
     }
@@ -1606,7 +1619,7 @@ char* TRI_GetAbsolutePath(char const* file, char const* cwd) {
 
   char* result = static_cast<char*>(
       TRI_Allocate(TRI_UNKNOWN_MEM_ZONE,
-                   (cwdLength + strlen(file) + 2) * sizeof(char), false));
+                   (cwdLength + strlen(file) + 2) * sizeof(char)));
 
   if (result != nullptr) {
     ptr = result;
@@ -1810,7 +1823,7 @@ static bool CopyFileContents(int srcFD, int dstFD, ssize_t fileSize,
     TRI_write_t nRead;
     TRI_read_t chunkRemain = fileSize;
     char* buf =
-        static_cast<char*>(TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, C128, false));
+        static_cast<char*>(TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, C128));
 
     if (buf == nullptr) {
       error = "failed to allocate temporary buffer";
@@ -2022,7 +2035,7 @@ int TRI_Crc32File(char const* path, uint32_t* crc) {
   *crc = TRI_InitialCrc32();
 
   bufferSize = 4096;
-  buffer = TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, (size_t)bufferSize, false);
+  buffer = TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, (size_t)bufferSize);
 
   if (buffer == nullptr) {
     return TRI_ERROR_OUT_OF_MEMORY;
@@ -2204,22 +2217,22 @@ std::string TRI_GetTempPath() {
                               NULL);                  // no template
 
   if (tempFileHandle == INVALID_HANDLE_VALUE) {
-    LOG_TOPIC(FATAL, arangodb::Logger::FIXME) << "Can not create a temporary file";
-    FATAL_ERROR_EXIT();
+    LOG_TOPIC(WARN, arangodb::Logger::FIXME) << "Cannot create temporary file '" << (LPTSTR) tempFileName;
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "cannot create temporary file"); 
   }
 
   ok = CloseHandle(tempFileHandle);
 
   if (!ok) {
-    LOG_TOPIC(FATAL, arangodb::Logger::FIXME) << "Can not close the handle of a temporary file";
-    FATAL_ERROR_EXIT();
+    LOG_TOPIC(WARN, arangodb::Logger::FIXME) << "Cannot close handle of temporary file";
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "cannot close handle of temporary file"); 
   }
 
   ok = DeleteFile(tempFileName);
 
   if (!ok) {
-    LOG_TOPIC(FATAL, arangodb::Logger::FIXME) << "Can not destroy a temporary file";
-    FATAL_ERROR_EXIT();
+    LOG_TOPIC(WARN, arangodb::Logger::FIXME) << "Cannot delete temporary file";
+    THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_INTERNAL, "cannot delete temporary file"); 
   }
 
   // ...........................................................................
@@ -2231,17 +2244,16 @@ std::string TRI_GetTempPath() {
     size_t j;
     size_t pathSize = _tcsclen(tempPathName);
     char* temp = static_cast<char*>(
-        TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, pathSize + 1, false));
+        TRI_Allocate(TRI_UNKNOWN_MEM_ZONE, pathSize + 1));
 
     if (temp == nullptr) {
-      LOG_TOPIC(FATAL, arangodb::Logger::FIXME) << "Out of memory";
-      FATAL_ERROR_EXIT();
+      THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
     }
 
     for (j = 0; j < pathSize; ++j) {
       if (tempPathName[j] > 127) {
-        LOG_TOPIC(FATAL, arangodb::Logger::FIXME) << "Invalid characters in temporary path name";
-        FATAL_ERROR_EXIT();
+        TRI_Free(TRI_UNKNOWN_MEM_ZONE, temp);
+        LOG_TOPIC(WARN, arangodb::Logger::FIXME) << "Invalid characters in temporary path name";
       }
       temp[j] = (char)(tempPathName[j]);
     }
@@ -2255,6 +2267,10 @@ std::string TRI_GetTempPath() {
 
     result = TRI_DuplicateString(temp);
     TRI_Free(TRI_UNKNOWN_MEM_ZONE, temp);
+  }
+
+  if (result == nullptr) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_OUT_OF_MEMORY);
   }
 
   std::string r = result;

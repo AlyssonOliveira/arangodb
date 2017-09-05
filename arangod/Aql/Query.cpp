@@ -28,7 +28,7 @@
 #include "Aql/ExecutionBlock.h"
 #include "Aql/ExecutionEngine.h"
 #include "Aql/ExecutionPlan.h"
-#include "Aql/Executor.h"
+#include "Aql/V8Executor.h"
 #include "Aql/Optimizer.h"
 #include "Aql/Parser.h"
 #include "Aql/PlanCache.h"
@@ -40,12 +40,14 @@
 #include "Basics/WorkMonitor.h"
 #include "Basics/fasthash.h"
 #include "Cluster/ServerState.h"
+#include "GeneralServer/AuthenticationFeature.h"
 #include "Logger/Logger.h"
 #include "RestServer/AqlFeature.h"
 #include "StorageEngine/TransactionState.h"
 #include "Transaction/Methods.h"
 #include "Transaction/StandaloneContext.h"
 #include "Transaction/V8Context.h"
+#include "Utils/ExecContext.h"
 #include "V8/v8-conv.h"
 #include "V8/v8-vpack.h"
 #include "V8Server/V8DealerFeature.h"
@@ -345,11 +347,10 @@ void Query::prepare(QueryRegistry* registry, uint64_t queryHash) {
       TRI_ASSERT(_collections.empty());
   
       // create the transaction object, but do not start it yet
-      AqlTransaction* trx = new AqlTransaction(
-        createTransactionContext(), _collections.collections(),
-        _queryOptions.transactionOptions,
-        _part == PART_MAIN);
-      _trx = trx;
+      _trx = AqlTransaction::create(
+              createTransactionContext(), _collections.collections(),
+              _queryOptions.transactionOptions,
+              _part == PART_MAIN);
 
       VPackBuilder* builder = planCacheEntry->builder.get();
       VPackSlice slice = builder->slice();
@@ -431,15 +432,25 @@ ExecutionPlan* Query::prepare() {
     _isModificationQuery = parser.isModificationQuery();
   }
 
-  TRI_ASSERT(_trx == nullptr); 
-
+  TRI_ASSERT(_trx == nullptr);
+  
+  // TODO: Remove once we have cluster wide transactions
+  std::unordered_set<std::string> inaccessibleCollections;
+#ifdef USE_ENTERPRISE
+  if (_queryOptions.transactionOptions.skipInaccessibleCollections) {
+    inaccessibleCollections = _queryOptions.inaccessibleShardIds;
+  }
+#endif
+  
+  std::unique_ptr<AqlTransaction> trx(AqlTransaction::create(
+                     createTransactionContext(), _collections.collections(),
+                     _queryOptions.transactionOptions,
+                     _part == PART_MAIN, inaccessibleCollections));
+  TRI_DEFER(trx.release());
   // create the transaction object, but do not start it yet
-  AqlTransaction* trx = new AqlTransaction(
-      createTransactionContext(), _collections.collections(), 
-      _queryOptions.transactionOptions, _part == PART_MAIN);
-  _trx = trx;
-    
-  // As soon as we start du instantiate the plan we have to clean it
+  _trx = trx.get();
+  
+  // As soon as we start to instantiate the plan we have to clean it
   // up before killing the unique_ptr
   if (!_queryString.empty()) {
     // we have an AST
@@ -484,7 +495,6 @@ ExecutionPlan* Query::prepare() {
     enterState(QueryExecutionState::ValueType::LOADING_COLLECTIONS);
     
     Result res = trx->addCollections(*_collections.collections());
-
     if (res.ok()) {
       res = _trx->begin();
     }
@@ -535,6 +545,17 @@ QueryResult Query::execute(QueryRegistry* registry) {
 
       if (cacheEntry != nullptr) {
         // got a result from the query cache
+        if(ExecContext::CURRENT != nullptr) {
+          AuthInfo* info = AuthenticationFeature::INSTANCE->authInfo();
+          for (std::string const& collectionName : cacheEntry->_collections) {
+            if (info->canUseCollection(ExecContext::CURRENT->user(),
+                                       ExecContext::CURRENT->database(),
+                                       collectionName) == AuthLevel::NONE) {
+              THROW_ARANGO_EXCEPTION(TRI_ERROR_FORBIDDEN);
+            }
+          }
+        }
+
         QueryResult res;
         // we don't have yet a transaction when we're here, so let's create
         // a mimimal context to build the result
@@ -683,7 +704,7 @@ QueryResult Query::execute(QueryRegistry* registry) {
   } catch (arangodb::basics::Exception const& ex) {
     setExecutionTime();
     cleanupPlanAndEngine(ex.code());
-    return QueryResult(ex.code(), ex.message() + QueryExecutionState::toStringWithPrefix(_state));
+    return QueryResult(ex.code(), "AQL: " + ex.message() + QueryExecutionState::toStringWithPrefix(_state));
   } catch (std::bad_alloc const&) {
     setExecutionTime();
     cleanupPlanAndEngine(TRI_ERROR_OUT_OF_MEMORY);
@@ -723,6 +744,17 @@ QueryResultV8 Query::executeV8(v8::Isolate* isolate, QueryRegistry* registry) {
 
       if (cacheEntry != nullptr) {
         // got a result from the query cache
+        if(ExecContext::CURRENT != nullptr) {
+          AuthInfo* info = AuthenticationFeature::INSTANCE->authInfo();
+          for (std::string const& collectionName : cacheEntry->_collections) {
+            if (info->canUseCollection(ExecContext::CURRENT->user(),
+                                       ExecContext::CURRENT->database(),
+                                       collectionName) == AuthLevel::NONE) {
+              THROW_ARANGO_EXCEPTION(TRI_ERROR_FORBIDDEN);
+            }
+          }
+        }
+
         QueryResultV8 result;
         // we don't have yet a transaction when we're here, so let's create
         // a mimimal context to build the result
@@ -872,7 +904,7 @@ QueryResultV8 Query::executeV8(v8::Isolate* isolate, QueryRegistry* registry) {
   } catch (arangodb::basics::Exception const& ex) {
     setExecutionTime();
     cleanupPlanAndEngine(ex.code());
-    return QueryResultV8(ex.code(), ex.message() + QueryExecutionState::toStringWithPrefix(_state));
+    return QueryResultV8(ex.code(), "AQL: " + ex.message() + QueryExecutionState::toStringWithPrefix(_state));
   } catch (std::bad_alloc const&) {
     setExecutionTime();
     cleanupPlanAndEngine(TRI_ERROR_OUT_OF_MEMORY);
@@ -886,8 +918,8 @@ QueryResultV8 Query::executeV8(v8::Isolate* isolate, QueryRegistry* registry) {
   } catch (...) {
     setExecutionTime();
     cleanupPlanAndEngine(TRI_ERROR_INTERNAL);
-    return QueryResult(TRI_ERROR_INTERNAL,
-                       TRI_errno_string(TRI_ERROR_INTERNAL) + QueryExecutionState::toStringWithPrefix(_state));
+    return QueryResultV8(TRI_ERROR_INTERNAL,
+                         TRI_errno_string(TRI_ERROR_INTERNAL) + QueryExecutionState::toStringWithPrefix(_state));
   }
 }
 
@@ -907,8 +939,8 @@ QueryResult Query::parse() {
     cleanupPlanAndEngine(TRI_ERROR_INTERNAL);
     return QueryResult(TRI_ERROR_INTERNAL, ex.what());
   } catch (...) {
-    return QueryResult(TRI_ERROR_OUT_OF_MEMORY,
-                       TRI_errno_string(TRI_ERROR_OUT_OF_MEMORY));
+    return QueryResult(TRI_ERROR_INTERNAL,
+                       "an unknown error occurred while parsing the query");
   }
 }
 
@@ -924,14 +956,11 @@ QueryResult Query::explain() {
     // put in bind parameters
     parser.ast()->injectBindParameters(_bindParameters);
 
-    enterState(QueryExecutionState::ValueType::AST_OPTIMIZATION);
     // optimize and validate the ast
-    parser.ast()->validateAndOptimize();
+    enterState(QueryExecutionState::ValueType::AST_OPTIMIZATION);
     
-    enterState(QueryExecutionState::ValueType::LOADING_COLLECTIONS);
-
     // create the transaction object, but do not start it yet
-    _trx = new AqlTransaction(createTransactionContext(),
+    _trx = AqlTransaction::create(createTransactionContext(),
                               _collections.collections(), 
                               _queryOptions.transactionOptions, true);
 
@@ -941,6 +970,10 @@ QueryResult Query::explain() {
     if (!res.ok()) {
       THROW_ARANGO_EXCEPTION(res);
     }
+    
+    enterState(QueryExecutionState::ValueType::LOADING_COLLECTIONS);
+    parser.ast()->validateAndOptimize();
+
 
     enterState(QueryExecutionState::ValueType::PLAN_INSTANTIATION);
     ExecutionPlan* plan = ExecutionPlan::instantiateFromAst(parser.ast());
@@ -1019,10 +1052,10 @@ void Query::engine(ExecutionEngine* engine) {
 }
 
 /// @brief get v8 executor
-Executor* Query::executor() {
+V8Executor* Query::executor() {
   if (_executor == nullptr) {
     // the executor is a singleton per query
-    _executor.reset(new Executor(_queryOptions.literalSizeThreshold));
+    _executor.reset(new V8Executor(_queryOptions.literalSizeThreshold));
   }
 
   TRI_ASSERT(_executor != nullptr);

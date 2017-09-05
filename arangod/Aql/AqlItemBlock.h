@@ -178,6 +178,7 @@ class AqlItemBlock {
   
   void copyColValuesFromFirstRow(size_t currentRow, RegisterId col) {
     TRI_ASSERT(currentRow > 0);
+    TRI_ASSERT(_data.capacity() > currentRow * _nrRegs + col);
 
     if (_data[currentRow * _nrRegs + col].isEmpty()) {
       // First update the reference count, if this fails, the value is empty
@@ -198,6 +199,20 @@ class AqlItemBlock {
           ++_valueCount[_data[i]];
         }
         _data[currentRow * _nrRegs + i] = _data[i];
+      }
+    }
+  }
+  
+  void copyValuesFromRow(size_t currentRow, RegisterId curRegs, size_t fromRow) {
+    TRI_ASSERT(currentRow != fromRow);
+
+    for (RegisterId i = 0; i < curRegs; i++) {
+      if (_data[currentRow * _nrRegs + i].isEmpty()) {
+        // First update the reference count, if this fails, the value is empty
+        if (_data[fromRow * _nrRegs + i].requiresDestruction()) {
+          ++_valueCount[_data[fromRow * _nrRegs + i]];
+        }
+        _data[currentRow * _nrRegs + i] = _data[fromRow * _nrRegs + i];
       }
     }
   }

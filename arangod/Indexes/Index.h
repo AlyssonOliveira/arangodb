@@ -89,7 +89,8 @@ class Index {
     TRI_IDX_TYPE_EDGE_INDEX,
     TRI_IDX_TYPE_FULLTEXT_INDEX,
     TRI_IDX_TYPE_SKIPLIST_INDEX,
-    TRI_IDX_TYPE_PERSISTENT_INDEX
+    TRI_IDX_TYPE_PERSISTENT_INDEX,
+    TRI_IDX_TYPE_NO_ACCESS_INDEX
   };
 
  public:
@@ -215,7 +216,6 @@ class Index {
   virtual bool canBeDropped() const = 0;
 
   /// @brief Checks if this index is identical to the given definition
-
   virtual bool matchesDefinition(arangodb::velocypack::Slice const&) const;
 
   /// @brief whether or not the index is sorted
@@ -226,19 +226,24 @@ class Index {
 
   /// @brief return the selectivity estimate of the index
   /// must only be called if hasSelectivityEstimate() returns true
-  virtual double selectivityEstimate(
-      arangodb::StringRef const* = nullptr) const;
+  ///
+  /// The extra StringRef is only used in the edge index as direction
+  /// attribute attribute, a Slice would be more flexible.
+  double selectivityEstimate(
+      arangodb::StringRef const* extra = nullptr) const;
+  
+  virtual double selectivityEstimateLocal(
+      arangodb::StringRef const* extra) const;
 
   /// @brief whether or not the index is implicitly unique
-  /// this can be the case if the index is not declared as unique, but contains
-  /// a
-  /// unique attribute such as _key
+  /// this can be the case if the index is not declared as unique,
+  /// but contains a unique attribute such as _key
   virtual bool implicitlyUnique() const;
 
   virtual size_t memory() const = 0;
 
-  virtual void toVelocyPack(arangodb::velocypack::Builder&, bool, bool) const;
-  std::shared_ptr<arangodb::velocypack::Builder> toVelocyPack(bool) const;
+  virtual void toVelocyPack(arangodb::velocypack::Builder&, bool withFigures, bool forPersistence) const;
+  std::shared_ptr<arangodb::velocypack::Builder> toVelocyPack(bool withFigures, bool forPersistence) const;
 
   virtual void toVelocyPackFigures(arangodb::velocypack::Builder&) const;
   std::shared_ptr<arangodb::velocypack::Builder> toVelocyPackFigures() const;
@@ -253,11 +258,9 @@ class Index {
       std::vector<std::pair<TRI_voc_rid_t, arangodb::velocypack::Slice>> const&,
       std::shared_ptr<arangodb::basics::LocalTaskQueue> queue);
 
-  virtual int load() = 0;
-  virtual int unload() = 0;
+  virtual void load() = 0;
+  virtual void unload() = 0;
 
-  // a garbage collection function for the index
-  virtual int cleanup();
   // called when the index is dropped
   virtual int drop();
 
@@ -296,10 +299,17 @@ class Index {
   virtual void expandInSearchValues(arangodb::velocypack::Slice const,
                                     arangodb::velocypack::Builder&) const;
 
-  virtual void warmup(arangodb::transaction::Methods* trx);
+  virtual void warmup(arangodb::transaction::Methods* trx,
+                      std::shared_ptr<basics::LocalTaskQueue> queue);
+
+  // needs to be called when the _colllection is guaranteed to be valid!
+  // unfortunatly access the logical collection on the coordinator is not always safe!
+  std::pair<bool,double> updateClusterEstimate(double defaultValue = 0.1);
 
  protected:
   static size_t sortWeight(arangodb::aql::AstNode const* node);
+
+  //returns estimate for index in cluster - the bool is true if the index was found
 
  private:
   /// @brief set fields from slice
@@ -315,6 +325,8 @@ class Index {
   mutable bool _unique;
 
   mutable bool _sparse;
+  
+  double _clusterSelectivity;
 };
 }
 

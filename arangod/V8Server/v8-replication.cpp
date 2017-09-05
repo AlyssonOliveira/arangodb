@@ -84,9 +84,9 @@ static void JS_TickRangesLoggerReplication(
 
   VPackBuilder builder;
   Result res = EngineSelectorFeature::ENGINE->createTickRanges(builder);
-  if(res.fail()){
+  if (res.fail()) {
     TRI_V8_THROW_EXCEPTION(res);
-   }
+  }
 
   v8::Handle<v8::Value>resultValue = TRI_VPackToV8(isolate, builder.slice());
   result = v8::Handle<v8::Array>::Cast(resultValue);
@@ -160,7 +160,7 @@ static void JS_LastLoggerReplication( v8::FunctionCallbackInfo<v8::Value> const&
   TRI_V8_TRY_CATCH_END
 }
 
-void addReplicationAuthentication(v8::Isolate* isolate,
+static void addReplicationAuthentication(v8::Isolate* isolate,
     v8::Handle<v8::Object> object,
     TRI_replication_applier_configuration_t &config) {
   bool hasUsernamePassword = false;
@@ -254,6 +254,11 @@ static void JS_SynchronizeReplication(
     verbose = TRI_ObjectToBoolean(object->Get(TRI_V8_ASCII_STRING("verbose")));
   }
 
+  bool skipCreateDrop = false;
+  if (object->Has(TRI_V8_ASCII_STRING("skipCreateDrop"))) {
+    skipCreateDrop = TRI_ObjectToBoolean(object->Get(TRI_V8_ASCII_STRING("skipCreateDrop")));
+  }
+
   if (endpoint.empty()) {
     TRI_V8_THROW_EXCEPTION_PARAMETER("<endpoint> must be a valid endpoint");
   }
@@ -312,9 +317,17 @@ static void JS_SynchronizeReplication(
         TRI_ObjectToBoolean(object->Get(TRI_V8_ASCII_STRING("useCollectionId")));
   }
 
+  std::string leaderId;
+  if (object->Has(TRI_V8_ASCII_STRING("leaderId"))) {
+    leaderId = TRI_ObjectToString(object->Get(TRI_V8_ASCII_STRING("leaderId")));
+  }
+
   std::string errorMsg = "";
   InitialSyncer syncer(vocbase, &config, restrictCollections, restrictType,
-                       verbose);
+                       verbose, skipCreateDrop);
+  if (!leaderId.empty()) {
+    syncer.setLeaderId(leaderId);
+  }
 
   int res = TRI_ERROR_NO_ERROR;
   v8::Handle<v8::Object> result = v8::Object::New(isolate);

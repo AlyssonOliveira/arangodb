@@ -36,6 +36,7 @@
 #include "Aql/QueryResources.h"
 #include "Aql/QueryResultV8.h"
 #include "Aql/QueryString.h"
+#include "Aql/RegexCache.h"
 #include "Aql/ResourceUsage.h"
 #include "Aql/types.h"
 #include "Basics/Common.h"
@@ -61,10 +62,10 @@ struct AstNode;
 class Ast;
 class ExecutionEngine;
 class ExecutionPlan;
-class Executor;
 class Query;
 struct QueryProfile;
 class QueryRegistry;
+class V8Executor;
 
 /// @brief equery part
 enum QueryPart { PART_MAIN, PART_DEPENDENT };
@@ -193,7 +194,10 @@ class Query {
   QueryResult explain();
 
   /// @brief get v8 executor
-  Executor* executor();
+  V8Executor* executor();
+  
+  /// @brief cache for regular expressions constructed by the query
+  RegexCache* regexCache() { return &_regexCache; }
 
   /// @brief return the engine, if prepared
   ExecutionEngine* engine() const { return _engine.get(); }
@@ -289,7 +293,7 @@ class Query {
   TRI_vocbase_t* _vocbase;
 
   /// @brief V8 code executor
-  std::unique_ptr<Executor> _executor;
+  std::unique_ptr<V8Executor> _executor;
 
   /// @brief the currently used V8 context
   V8Context* _context;
@@ -339,6 +343,9 @@ class Query {
 
   /// @brief warnings collected during execution
   std::vector<std::pair<int, std::string>> _warnings;
+
+  /// @brief cache for regular expressions constructed by the query
+  RegexCache _regexCache;
  
   /// @brief query start time
   double _startTime;

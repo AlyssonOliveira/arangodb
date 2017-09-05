@@ -31,6 +31,7 @@
 #include "Cluster/ServerState.h"
 #include "Cluster/ClusterComm.h"
 #include "GeneralServer/AuthenticationFeature.h"
+#include "RestServer/FeatureCacheFeature.h"
 #include "V8/v8-buffer.h"
 #include "V8/v8-conv.h"
 #include "V8/v8-globals.h"
@@ -288,7 +289,7 @@ static void JS_APIAgency(std::string const& envelope,
     comm.sendWithFailover(
       arangodb::rest::RequestType::POST,
       AgencyCommManager::CONNECTION_OPTIONS._requestTimeout,
-      std::string("/_api/agency/") + envelope, builder.toJson());
+      std::string("/_api/agency/") + envelope, builder.slice());
 
   if (!result.successful()) {
     THROW_AGENCY_EXCEPTION(result);
@@ -395,6 +396,55 @@ static void JS_SetAgency(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_END
 }
 
+////////////////////////////////////////////////////////////////////////////////
+/// @brief returns the agency summery
+////////////////////////////////////////////////////////////////////////////////
+
+static void JS_Agency(v8::FunctionCallbackInfo<v8::Value> const& args) {
+  TRI_V8_TRY_CATCH_BEGIN(isolate)
+  v8::HandleScope scope(isolate);
+
+  if (args.Length() > 0) {
+    TRI_V8_THROW_EXCEPTION_USAGE("agency()");
+  }
+
+  VPackBuilder builder;
+  { VPackArrayBuilder a(&builder);
+    { VPackArrayBuilder b(&builder);
+      builder.add(VPackValue("/.agency"));
+    }
+  }
+
+  AgencyComm comm;
+  AgencyCommResult result =
+    comm.sendWithFailover(
+      arangodb::rest::RequestType::POST,
+      AgencyCommManager::CONNECTION_OPTIONS._requestTimeout,
+      std::string("/_api/agency/read"), builder.slice());
+
+  if (!result.successful()) {
+    THROW_AGENCY_EXCEPTION(result);
+  }
+
+  try {
+    result.setVPack(VPackParser::fromJson(result.bodyRef()));
+    result._body.clear();
+  } catch (std::exception const& e) {
+    LOG_TOPIC(ERR, Logger::AGENCYCOMM)
+      << "Error transforming result. " << e.what();
+    result.clear();
+  } catch (...) {
+    LOG_TOPIC(ERR, Logger::AGENCYCOMM)
+      << "Error transforming result. Out of memory";
+    result.clear();
+  }
+  
+  auto l = TRI_VPackToV8(isolate, result.slice());
+
+  TRI_V8_RETURN(l);
+  TRI_V8_TRY_CATCH_END
+
+}
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief returns the agency endpoints
 ////////////////////////////////////////////////////////////////////////////////
@@ -656,6 +706,8 @@ static void JS_GetCollectionInfoCurrentClusterInfo(
       ClusterInfo::instance()->getCollectionCurrent(TRI_ObjectToString(args[0]),
                                                     cid);
 
+  result->Set(TRI_V8_ASCII_STRING("currentVersion"),
+              v8::Number::New(isolate, (double) cic->getCurrentVersion()));
   result->Set(TRI_V8_ASCII_STRING("type"),
               v8::Number::New(isolate, (int)ci->type()));
 
@@ -1884,10 +1936,9 @@ static void JS_GetId(v8::FunctionCallbackInfo<v8::Value> const& args) {
 
 static void JS_ClusterDownload(v8::FunctionCallbackInfo<v8::Value> const& args) {
   TRI_V8_TRY_CATCH_BEGIN(isolate);
-  AuthenticationFeature* authentication =
-      application_features::ApplicationServer::getFeature<AuthenticationFeature>("Authentication");
   
-  if (authentication->isEnabled()) {
+  auto authentication = FeatureCacheFeature::instance()->authenticationFeature();
+  if (authentication->isActive()) {
     // mop: really quick and dirty
     v8::Handle<v8::Object> options = v8::Object::New(isolate);
     v8::Handle<v8::Object> headers = v8::Object::New(isolate);
@@ -1935,6 +1986,8 @@ void TRI_InitV8Cluster(v8::Isolate* isolate, v8::Handle<v8::Context> context) {
   rt = ft->InstanceTemplate();
   rt->SetInternalFieldCount(2);
 
+  TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("agency"), JS_Agency);
+  
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("read"), JS_ReadAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("write"), JS_WriteAgency);
   TRI_AddMethodVocbase(isolate, rt, TRI_V8_ASCII_STRING("transact"), JS_TransactAgency);

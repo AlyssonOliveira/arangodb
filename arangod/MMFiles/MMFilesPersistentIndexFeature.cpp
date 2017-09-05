@@ -61,6 +61,7 @@ MMFilesPersistentIndexFeature::MMFilesPersistentIndexFeature(
   setOptional(true);
   requiresElevatedPrivileges(false);
   startsAfter("RocksDBOption");
+  startsBefore("Database");
   onlyEnabledWith("MMFilesEngine");
 }
 
@@ -118,17 +119,12 @@ void MMFilesPersistentIndexFeature::start() {
   _options.num_levels = static_cast<int>(opts->_numLevels);
   _options.max_bytes_for_level_base = opts->_maxBytesForLevelBase;
   _options.max_bytes_for_level_multiplier = static_cast<int>(opts->_maxBytesForLevelMultiplier);
-  _options.verify_checksums_in_compaction = opts->_verifyChecksumsInCompaction;
   _options.optimize_filters_for_hits = opts->_optimizeFiltersForHits;
 
-  _options.base_background_compactions = static_cast<int>(opts->_baseBackgroundCompactions);
-  _options.max_background_compactions = static_cast<int>(opts->_maxBackgroundCompactions);
-
+  _options.max_background_jobs = static_cast<int>(opts->_maxBackgroundJobs);
   _options.compaction_readahead_size = static_cast<size_t>(opts->_compactionReadaheadSize);
-
-  if (_options.base_background_compactions > 1 || _options.max_background_compactions > 1) {
-    _options.env->SetBackgroundThreads(
-      (std::max)(_options.base_background_compactions, _options.max_background_compactions),
+  if (_options.max_background_jobs > 1) {
+    _options.env->SetBackgroundThreads(std::max(1, _options.max_background_jobs),
       rocksdb::Env::Priority::LOW);
   }
 
@@ -138,7 +134,11 @@ void MMFilesPersistentIndexFeature::start() {
   rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(_options, _path, &_db);
 
   if (! status.ok()) {
-    LOG_TOPIC(FATAL, arangodb::Logger::FIXME) << "unable to initialize RocksDB engine for persistent indexes: " << status.ToString();
+    std::string error;
+    if (status.IsIOError()) {
+      error = "; Maybe your filesystem doesn't provide required features? (Cifs? NFS?)";
+    }
+    LOG_TOPIC(FATAL, arangodb::Logger::FIXME) << "unable to initialize RocksDB engine for persistent indexes: " << status.ToString() << error;
     FATAL_ERROR_EXIT();
   }
 }

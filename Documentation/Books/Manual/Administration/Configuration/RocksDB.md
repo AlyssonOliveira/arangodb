@@ -5,7 +5,18 @@ RocksDB is a highly configurable key-value store used to power our RocksDB
 storage engine. Most of the options on this page are pass-through options to the
 underlying RocksDB instance, and we change very few of their default settings.
 
+Depending [on the storage engine you have chosen](GeneralArangod.md#storage-engine) the availability
+and the scope of these options changes. 
+
+In case you have chosen `mmfiles` some of the following options apply to persistent indexes.
+In case of `rocksdb` it will apply to all data stored as well as indexes.
+
 ## Pass-through options
+
+`--rocksdb.wal-directory`
+
+Absolute path for the RocksDB WAL files. If left empty, this will use a subdirectory
+`journals` inside the data directory.
 
 ### Write buffers
 
@@ -26,6 +37,15 @@ Default: 2.
 
 Minimum number of write buffers that will be merged together when flushing to
 normal storage. Default: 1.
+
+`--rocksdb.max-total-wal-size`
+
+Maximum total size of WAL files that, when reached, will force a flush of all
+column families whose data is backed by the oldest WAL files. Setting this
+to a low value will trigger regular flushing of column family data from memtables, 
+so that WAL files can be moved to the archive.
+Setting this to a high value will avoid regular flushing but may prevent WAL
+files from being moved to the archive and being removed.
 
 `--rocksdb.delayed-write-rate` (Hidden)
 
@@ -81,7 +101,7 @@ compaction to catch up. Default: 36.
 
 ### File I/O
 
-`--rocksdb.compaction-read-ahead-size` (Hidden)
+`--rocksdb.compaction-read-ahead-size`
 
 If non-zero, we perform bigger reads when doing compaction. If you're  running
 RocksDB on spinning disks, you should set this to at least 2MiB. That way
@@ -92,9 +112,9 @@ RocksDB's compaction is doing sequential instead of random reads. Default: 0.
 Only meaningful on Linux. If set, use `O_DIRECT` for reading files. Default:
 false.
 
-`--rocksdb.use-direct-writes` (Hidden)
+`--rocksdb.use-direct-io-for-flush-and-compaction` (Hidden)
 
-Only meaningful on Linux. If set,use `O_DIRECT` for writing files. Default: false.
+Only meaningful on Linux. If set, use `O_DIRECT` for writing files. Default: false.
 
 `--rocksdb.use-fsync` (Hidden)
 
@@ -103,30 +123,19 @@ If set, issue an `fsync` call when writing to disk (set to false to issue
 
 ### Background tasks
 
-`--rocksdb.base-background-compactions` (Hidden)
-
-Suggested number of concurrent background compaction jobs, submitted to the low
-priority thread pool. Default: 1.
-
-`--rocksdb.max-background-compactions`
+`--rocksdb.max-background-jobs`
 
 Maximum number of concurrent background compaction jobs, submitted to the low
-priority thread pool. Default: 1.
-
-`--rocksdb.max-background-flushes`
-
-Maximum number of concurrent flush operations, submitted to the high priority
-thread pool. Default: 1.
+priority thread pool. Default: number of processors.
 
 `--rocksdb.num-threads-priority-high`
 
 Number of threads for high priority operations (e.g. flush). We recommend
-setting this equal to `max-background-flushes`. Default: 1.
+setting this equal to `max-background-flushes`. Default: number of processors / 2.
 
 `--rocksdb.num-threads-priority-low`
 
-Number of threads for low priority operations (e.g. compaction). We recommend
-setting this equal to `max-background-compactions`. Default: 1.
+Number of threads for low priority operations (e.g. compaction). Default: number of processors / 2.
 
 ### Caching
 
@@ -152,11 +161,6 @@ Approximate size of user data (in bytes) packed per block for uncompressed data.
 Number of log files to keep around for recycling. Default: 0.
 
 ### Miscellaneous
-
-`--rocksdb.verify-checksums-in-compaction` (Hidden)
-
-If true, compaction will verify the data checksum on every read that happens as
-part of compaction. Default: true;
 
 `--rocksdb.optimize-filters-for-hits` (Hidden)
 

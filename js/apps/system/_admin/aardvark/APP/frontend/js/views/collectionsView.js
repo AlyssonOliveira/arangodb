@@ -7,6 +7,7 @@
   window.CollectionsView = Backbone.View.extend({
     el: '#content',
     el2: '#collectionsThumbnailsIn',
+    readOnly: false,
 
     searchTimeout: null,
     refreshRate: 10000,
@@ -138,8 +139,14 @@
       $('#searchInput')[0].setSelectionRange(length, length);
 
       arangoHelper.fixTooltips('.icon_arangodb, .arangoicon', 'left');
+      arangoHelper.checkDatabasePermissions(this.setReadOnly.bind(this));
 
       return this;
+    },
+
+    setReadOnly: function () {
+      this.readOnly = true;
+      $('#createCollection').parent().parent().addClass('disabled');
     },
 
     events: {
@@ -312,23 +319,25 @@
     },
 
     createCollection: function (e) {
-      e.preventDefault();
-      var self = this;
+      if (!this.readOnly) {
+        e.preventDefault();
+        var self = this;
 
-      $.ajax({
-        type: 'GET',
-        cache: false,
-        url: arangoHelper.databaseUrl('/_api/engine'),
-        contentType: 'application/json',
-        processData: false,
-        success: function (data) {
-          self.engine = data;
-          self.createNewCollectionModal(data);
-        },
-        error: function () {
-          arangoHelper.arangoError('Engine', 'Could not fetch ArangoDB Engine details.');
-        }
-      });
+        $.ajax({
+          type: 'GET',
+          cache: false,
+          url: arangoHelper.databaseUrl('/_api/engine'),
+          contentType: 'application/json',
+          processData: false,
+          success: function (data) {
+            self.engine = data;
+            self.createNewCollectionModal(data);
+          },
+          error: function () {
+            arangoHelper.arangoError('Engine', 'Could not fetch ArangoDB Engine details.');
+          }
+        });
+      }
     },
 
     submitCreateCollection: function () {
@@ -497,16 +506,18 @@
               this.submitCreateCollection.bind(this)
             )
           );
-          if (window.App.isCluster && frontendConfig.isEnterprise) {
-            advancedTableContent.push(
-              window.modalView.createSelectEntry(
-                'is-satellite-collection',
-                'Satellite collection',
-                '',
-                'Create satellite collection? This will disable replication factor.',
-                [{value: false, label: 'No'}, {value: true, label: 'Yes'}]
-              )
-            );
+          if (window.App.isCluster) {
+            if (frontendConfig.isEnterprise) {
+              advancedTableContent.push(
+                window.modalView.createSelectEntry(
+                  'is-satellite-collection',
+                  'Satellite collection',
+                  '',
+                  'Create satellite collection? This will disable replication factor.',
+                  [{value: false, label: 'No'}, {value: true, label: 'Yes'}]
+                )
+              );
+            }
             advancedTableContent.push(
               window.modalView.createTextEntry(
                 'new-replication-factor',

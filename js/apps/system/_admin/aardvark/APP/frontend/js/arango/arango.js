@@ -95,6 +95,22 @@
       localStorage.setItem('jwtUser', username);
     },
 
+    checkJwt: function () {
+      $.ajax({
+        type: 'GET',
+        cache: false,
+        url: arangoHelper.databaseUrl('/_api/version'),
+        contentType: 'application/json',
+        processData: false,
+        async: true,
+        error: function (jqXHR) {
+          if (jqXHR.status === 401) {
+            window.App.navigate('login', {trigger: true});
+          }
+        }
+      });
+    },
+
     getCoordinatorShortName: function (id) {
       var shortName;
       if (window.clusterHealth) {
@@ -998,6 +1014,51 @@
             document.body.removeChild(a);
           }, 500);
         });
+    },
+
+    checkCollectionPermissions: function (collectionID, roCallback) {
+      var url = arangoHelper.databaseUrl('/_api/user/' +
+        encodeURIComponent(window.App.userCollection.activeUser) +
+        '/database/' + encodeURIComponent(frontendConfig.db) + '/' + encodeURIComponent(collectionID));
+
+      // FETCH COMPLETE DB LIST
+      $.ajax({
+        type: 'GET',
+        url: url,
+        contentType: 'application/json',
+        success: function (data) {
+          // fetching available dbs and permissions
+          if (data.result === 'ro') {
+            roCallback();
+          }
+        },
+        error: function (data) {
+          arangoHelper.arangoError('User', 'Could not fetch collection permissions.');
+        }
+      });
+    },
+
+    checkDatabasePermissions: function (roCallback) {
+      var url = arangoHelper.databaseUrl('/_api/user/' +
+        encodeURIComponent(window.App.userCollection.activeUser) +
+        '/database/' + encodeURIComponent(frontendConfig.db));
+
+      // FETCH COMPLETE DB LIST
+      $.ajax({
+        type: 'GET',
+        url: url,
+        contentType: 'application/json',
+        success: function (data) {
+          // fetching available dbs and permissions
+          if (data.result === 'ro') {
+            roCallback();
+          }
+        },
+        error: function (data) {
+          arangoHelper.arangoError('User', 'Could not fetch collection permissions.');
+        }
+      });
     }
+
   };
 }());

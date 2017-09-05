@@ -48,6 +48,7 @@ using namespace arangodb::aql;
 
 IndexBlock::IndexBlock(ExecutionEngine* engine, IndexNode const* en)
     : ExecutionBlock(engine, en),
+      DocumentProducingBlock(en, _trx),
       _collection(en->collection()),
       _currentIndex(0),
       _indexes(en->getIndexes()),
@@ -57,8 +58,7 @@ IndexBlock::IndexBlock(ExecutionEngine* engine, IndexNode const* en)
       _hasV8Expression(false),
       _indexesExhausted(false),
       _isLastIndex(false),
-      _returned(0),
-      _collector(&_engine->_itemBlockManager) {
+      _returned(0) {
   _mmdr.reset(new ManagedDocumentResult);
 
   if (_condition != nullptr) {
@@ -301,17 +301,9 @@ bool IndexBlock::initIndexes() {
       }
     } else {
       // no V8 context required!
-
-      Functions::InitializeThreadContext();
-      try {
-        executeExpressions();
-        TRI_IF_FAILURE("IndexBlock::executeExpression") {
-          THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
-        }
-        Functions::DestroyThreadContext();
-      } catch (...) {
-        Functions::DestroyThreadContext();
-        throw;
+      executeExpressions();
+      TRI_IF_FAILURE("IndexBlock::executeExpression") {
+        THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
       }
     }
   }
@@ -405,7 +397,11 @@ bool IndexBlock::skipIndex(size_t atMost) {
       THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
     }
 
-    if (_cursor->skip(atMost - _returned, _returned)) {
+    uint64_t returned = static_cast<uint64_t>(_returned);
+    int res = _cursor->skip(atMost - returned, returned);
+    _returned = static_cast<size_t>(returned);
+
+    if (res == TRI_ERROR_NO_ERROR) {
       // We have skipped enough.
       // And this index could return more.
       // We are good.
@@ -468,7 +464,6 @@ bool IndexBlock::readIndex(
 
 int IndexBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
   DEBUG_BEGIN_BLOCK();
-  _collector.clear();
   int res = ExecutionBlock::initializeCursor(items, pos);
 
   if (res != TRI_ERROR_NO_ERROR) {
@@ -478,6 +473,7 @@ int IndexBlock::initializeCursor(AqlItemBlock* items, size_t pos) {
   _alreadyReturned.clear();
   _returned = 0;
   _pos = 0;
+  _currentIndex = 0;
 
   return TRI_ERROR_NO_ERROR;
 
@@ -491,63 +487,52 @@ AqlItemBlock* IndexBlock::getSome(size_t atLeast, size_t atMost) {
   traceGetSomeBegin();
   if (_done) {
     traceGetSomeEnd(nullptr);
-    return _collector.steal();
+    return nullptr;
   }
 
   TRI_ASSERT(atMost > 0);
   size_t curRegs;
 
-  std::unique_ptr<AqlItemBlock> res;
+  std::unique_ptr<AqlItemBlock> res(
+      requestBlock(atMost,
+      getPlanNode()->getRegisterPlan()->nrRegs[getPlanNode()->getDepth()]));
+  _returned = 0;   // here we count how many of this AqlItemBlock we have
+                   // already filled
+  size_t copyFromRow;  // The row to copy values from
+
+  // The following callbacks write one index lookup result into res at
+  // position _returned:
 
   IndexIterator::DocumentCallback callback;
   if (_indexes.size() > 1) {
     // Activate uniqueness checks
-    callback = [&](ManagedDocumentResult const& mdr) {
+    callback = [&](DocumentIdentifierToken const& token, VPackSlice slice) {
       TRI_ASSERT(res.get() != nullptr);
       if (!_isLastIndex) {
         // insert & check for duplicates in one go
-        if (!_alreadyReturned.emplace(mdr.lastRevisionId()).second) {
+        if (!_alreadyReturned.emplace(token._data).second) {
           // Document already in list. Skip this
           return;
         }
       } else {
         // only check for duplicates
-        if (_alreadyReturned.find(mdr.lastRevisionId()) != _alreadyReturned.end()) {
+        if (_alreadyReturned.find(token._data) != _alreadyReturned.end()) {
           // Document found, skip
           return;
         }
       }
-      res->setValue(_returned,
-                    static_cast<arangodb::aql::RegisterId>(curRegs),
-                    mdr.createAqlValue());
-
-      if (_returned > 0) {
-        // re-use already copied AqlValues
-        res->copyValuesFromFirstRow(_returned,
-                                    static_cast<RegisterId>(curRegs));
-      }
-      ++_returned;
+      
+      _documentProducer(res.get(), slice, curRegs, _returned, copyFromRow);
     };
   } else {
     // No uniqueness checks
-    callback = [&](ManagedDocumentResult const& mdr) {
+    callback = [&](DocumentIdentifierToken const& token, VPackSlice slice) {
       TRI_ASSERT(res.get() != nullptr);
-      res->setValue(_returned,
-                    static_cast<arangodb::aql::RegisterId>(curRegs),
-                    mdr.createAqlValue());
-
-      if (_returned > 0) {
-        // re-use already copied AqlValues
-        res->copyValuesFromFirstRow(_returned,
-                                    static_cast<RegisterId>(curRegs));
-      }
-      ++_returned;
+      _documentProducer(res.get(), slice, curRegs, _returned, copyFromRow);
     };
   }
 
-  size_t found = 0;
   do {
-    _returned = 0;
     if (_buffer.empty()) {
       size_t toFetch = (std::min)(DefaultBatchSize(), atMost);
       if (!ExecutionBlock::getBlock(toFetch, toFetch) || (!initIndexes())) {
@@ -583,47 +568,39 @@ AqlItemBlock* IndexBlock::getSome(size_t atLeast, size_t atMost) {
     AqlItemBlock* cur = _buffer.front();
     curRegs = cur->getNrRegs();
    
-    TRI_ASSERT(atMost >= found);
-
-    res.reset(requestBlock(
-        atMost - found,
-        getPlanNode()->getRegisterPlan()->nrRegs[getPlanNode()->getDepth()]));
-
     TRI_ASSERT(curRegs <= res->getNrRegs());
 
     // only copy 1st row of registers inherited from previous frame(s)
-    inheritRegisters(cur, res.get(), _pos);
+    inheritRegisters(cur, res.get(), _pos, _returned);
+    copyFromRow = _returned;
 
-    // Read the next (atMost - j) many elements from the indexes
-    _indexesExhausted = !readIndex(atMost - found, callback);
-    if (_returned > 0) {
-      if (_returned < atMost - found) {
-        // We have prepared too many entries, we could only fill less.
-        // Shrink the block
-        res->shrink(_returned, false);
+    // Read the next elements from the indexes
+    auto saveReturned = _returned;
+    _indexesExhausted = !readIndex(atMost, callback);
+    if (_returned == saveReturned) {
+      // No results. Kill the registers:
+      for (arangodb::aql::RegisterId i = 0; i < curRegs; ++i) {
+        res->destroyValue(_returned, i);
       }
-      _collector.add(std::move(res));
     } else {
-      // No results. Kill the registers
-      res.reset();
+      // Update statistics
+      _engine->_stats.scannedIndex += _returned - saveReturned;
     }
-    TRI_ASSERT(res.get() == nullptr);
 
-    // Update statistics
-    _engine->_stats.scannedIndex += _returned;
-    found += _returned;
-    _returned = 0;
-  } while (found < atMost);
+  } while (_returned < atMost);
 
-  TRI_ASSERT(found == _collector.totalSize());
-
-  if (found == 0) {
-    // We have not found anything at all.
-    // Return a nullptr.
-    return _collector.steal();
+  // Now there are three cases:
+  //   (1) The AqlItemBlock is empty (no result for any input or index)
+  //   (2) The AqlItemBlock is half-full (0 < _returned < atMost)
+  //   (3) The AqlItemBlock is full (_returned == atMost)
+  if (_returned == 0) {
+    AqlItemBlock* dummy = res.release();
+    returnBlock(dummy);
+    return nullptr;
   }
-
-  res.reset(_collector.steal());
+  if (_returned < atMost) {
+    res->shrink(_returned, false);
+  }
 
   // Clear out registers no longer needed later:
   clearRegisters(res.get());

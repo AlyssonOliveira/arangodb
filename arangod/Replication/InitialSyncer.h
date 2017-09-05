@@ -25,6 +25,7 @@
 #define ARANGOD_REPLICATION_INITIAL_SYNCER_H 1
 
 #include "Basics/Common.h"
+#include "Basics/StaticStrings.h"
 #include "Logger/Logger.h"
 #include "Replication/Syncer.h"
 #include "Utils/SingleCollectionTransaction.h"
@@ -55,7 +56,7 @@ int syncChunkRocksDB(InitialSyncer& syncer, SingleCollectionTransaction* trx,
                      std::string const& keysId, uint64_t chunkId,
                      std::string const& lowString,
                      std::string const& highString,
-                     std::vector<std::pair<std::string, uint64_t>> markers,
+                     std::vector<std::pair<std::string, uint64_t>> const& markers,
                      std::string& errorMsg);
 namespace httpclient {
 class SimpleHttpResult;
@@ -78,7 +79,7 @@ class InitialSyncer : public Syncer {
                      std::string const& keysId, uint64_t chunkId,
                      std::string const& lowString,
                      std::string const& highString,
-                     std::vector<std::pair<std::string, uint64_t>> markers,
+                     std::vector<std::pair<std::string, uint64_t>> const& markers,
                      std::string& errorMsg);
 
  private:
@@ -97,7 +98,7 @@ class InitialSyncer : public Syncer {
  public:
   InitialSyncer(TRI_vocbase_t*, TRI_replication_applier_configuration_t const*,
                 std::unordered_map<std::string, bool> const&,
-                std::string const&, bool verbose);
+                std::string const&, bool verbose, bool skipCreateDrop);
 
   ~InitialSyncer();
 
@@ -222,33 +223,6 @@ class InitialSyncer : public Syncer {
                            std::string const&, TRI_voc_tick_t, std::string&);
 
   //////////////////////////////////////////////////////////////////////////////
-  /// @brief incrementally fetch data from a collection
-  //////////////////////////////////////////////////////////////////////////////
-
-  int handleSyncKeysRocksDB(arangodb::LogicalCollection* col,
-                            std::string const& keysId, std::string const& cid,
-                            std::string const& collectionName,
-                            TRI_voc_tick_t maxTick, std::string& errorMsg);
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief incrementally fetch chunk data from a collection
-  //////////////////////////////////////////////////////////////////////////////
-
-  int syncChunkRocksDB(SingleCollectionTransaction* trx,
-                       std::string const& keysId, uint64_t chunkId,
-                       std::string const& lowKey, std::string const& highKey,
-                       std::vector<std::pair<std::string, uint64_t>> markers,
-                       std::string& errorMsg);
-
-  //////////////////////////////////////////////////////////////////////////////
-  /// @brief incrementally fetch data from a collection
-  //////////////////////////////////////////////////////////////////////////////
-
-  int handleSyncKeysMMFiles(arangodb::LogicalCollection* col,
-                            std::string const& keysId, std::string const& cid,
-                            std::string const& collectionName,
-                            TRI_voc_tick_t maxTick, std::string& errorMsg);
-
-  //////////////////////////////////////////////////////////////////////////////
   /// @brief changes the properties of a collection, based on the VelocyPack
   /// provided
   //////////////////////////////////////////////////////////////////////////////
@@ -279,6 +253,10 @@ class InitialSyncer : public Syncer {
       std::vector<std::pair<arangodb::velocypack::Slice,
                             arangodb::velocypack::Slice>> const&,
       bool, std::string&, sync_phase_e);
+
+  std::unordered_map<std::string, std::string> createHeaders() {
+    return { {StaticStrings::ClusterCommSource, ServerState::instance()->getId()} };
+  }
 
  private:
   //////////////////////////////////////////////////////////////////////////////
@@ -352,6 +330,12 @@ class InitialSyncer : public Syncer {
   //////////////////////////////////////////////////////////////////////////////
 
   static size_t const MaxChunkSize;
+
+  // in the cluster case it is a total NOGO to create or drop collections
+  // because this HAS to be handled in the schmutz. otherwise it forgets who
+  // the leader was etc.
+  bool _skipCreateDrop;
+
 };
 }
 

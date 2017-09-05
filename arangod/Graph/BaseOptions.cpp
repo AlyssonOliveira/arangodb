@@ -23,6 +23,7 @@
 
 #include "BaseOptions.h"
 #include "Aql/Ast.h"
+#include "Aql/AqlTransaction.h"
 #include "Aql/Condition.h"
 #include "Aql/ExecutionPlan.h"
 #include "Aql/Expression.h"
@@ -272,7 +273,7 @@ void BaseOptions::injectLookupInfoInList(std::vector<LookupInfo>& list,
     // It is sufficient to only check member one.
     // We build the condition this way.
     auto mem = eq->getMemberUnchecked(0);
-    if (mem->isAttributeAccessForVariable(pathCmp)) {
+    if (mem->isAttributeAccessForVariable(pathCmp, true)) {
       if (pathCmp.first != _tmpVar) {
         continue;
       }
@@ -286,7 +287,7 @@ void BaseOptions::injectLookupInfoInList(std::vector<LookupInfo>& list,
     }
   }
   std::unordered_set<size_t> toRemove;
-  aql::Condition::CollectOverlappingMembers(plan, _tmpVar, condition, info.indexCondition, toRemove);
+  aql::Condition::CollectOverlappingMembers(plan, _tmpVar, condition, info.indexCondition, toRemove, false);
   size_t n = condition->numMembers();
   if (n == toRemove.size()) {
     // FastPath, all covered.
@@ -366,6 +367,7 @@ bool BaseOptions::evaluateExpression(arangodb::aql::Expression* expression,
   }
 
   TRI_ASSERT(!expression->isV8());
+  TRI_ASSERT(value.isObject() || value.isNull());
   expression->setVariable(_tmpVar, value);
   bool mustDestroy = false;
   aql::AqlValue res = expression->execute(_trx, _ctx, mustDestroy);

@@ -1307,7 +1307,7 @@ function RELATIONAL_ARRAY_FUNC (lhs, rhs, quantifier, func) {
   } else if (quantifier === 2) {
     // ALL
     if (n === 0) {
-      return false;
+      return true;
     }
     min = max = n;
   } else if (quantifier === 3) {
@@ -2037,7 +2037,8 @@ function AQL_CONCAT_SEPARATOR () {
 function AQL_CHAR_LENGTH (value) {
   'use strict';
 
-  return AQL_TO_STRING(value).length;
+  // https://mathiasbynens.be/notes/javascript-unicode
+  return [...AQL_TO_STRING(value)].length;
 }
 
 // //////////////////////////////////////////////////////////////////////////////
@@ -2965,7 +2966,8 @@ function AQL_LENGTH (value) {
     return value ? 1 : 0;
   }
 
-  return AQL_TO_STRING(value).length;
+  // https://mathiasbynens.be/notes/javascript-unicode
+  return [...AQL_TO_STRING(value)].length;
 }
 
 // //////////////////////////////////////////////////////////////////////////////

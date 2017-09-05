@@ -47,20 +47,21 @@ class RocksDBOptionFeature final
   void validateOptions(std::shared_ptr<options::ProgramOptions>) override final;
   void start() override final;
 
+  int64_t _transactionLockTimeout;
+  std::string _walDirectory;
   uint64_t _writeBufferSize;
   uint64_t _maxWriteBufferNumber;
+  uint64_t _maxTotalWalSize;
   uint64_t _delayedWriteRate;
   uint64_t _minWriteBufferNumberToMerge;
   uint64_t _numLevels;
   uint64_t _numUncompressedLevels;
   uint64_t _maxBytesForLevelBase;
   double _maxBytesForLevelMultiplier;
-  uint64_t _baseBackgroundCompactions;
-  uint64_t _maxBackgroundCompactions;
+  int32_t _maxBackgroundJobs;
   uint64_t _maxSubcompactions;
-  uint64_t _maxFlushes;
-  uint64_t _numThreadsHigh;
-  uint64_t _numThreadsLow;
+  uint32_t _numThreadsHigh;
+  uint32_t _numThreadsLow;
   uint64_t _blockCacheSize;
   uint64_t _blockCacheShardBits;
   uint64_t _tableBlockSize;
@@ -69,13 +70,14 @@ class RocksDBOptionFeature final
   int64_t _level0CompactionTrigger;
   int64_t _level0SlowdownTrigger;
   int64_t _level0StopTrigger;
-  bool _verifyChecksumsInCompaction;
+  bool _enablePipelinedWrite;
   bool _optimizeFiltersForHits;
   bool _useDirectReads;
-  bool _useDirectWrites;
+  bool _useDirectIoForFlushAndCompaction;
   bool _useFSync;
   bool _skipCorrupted;
   bool _dynamicLevelBytes;
+  bool _enableStatistics;
 };
 
 }  // namespace arangodb

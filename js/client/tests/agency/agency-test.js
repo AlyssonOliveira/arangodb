@@ -100,6 +100,7 @@ function agencyTestSuite () {
         break;
       } else {
         require('console').warn('Waiting for leader ... ');
+        wait(1.0);
       }
     }
     try {
@@ -941,7 +942,7 @@ function agencyTestSuite () {
       require("console").warn("Provoking second log compaction for now with", 
         count3, "keys, from log entry", cur + count + count2, "on.");
       doCountTransactions(count3, count + count2);
-    }/*,
+    },
 
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief Huge transaction package
@@ -954,7 +955,7 @@ function agencyTestSuite () {
       }
       writeAndCheck(huge);
       assertEqual(readAndCheck([["a"]]), [{"a":20000}]);
-    }*/
+    }
 
   };
 }

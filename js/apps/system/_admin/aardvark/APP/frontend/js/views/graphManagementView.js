@@ -11,6 +11,7 @@
     edgeDefintionTemplate: templateEngine.createTemplate('edgeDefinitionTable.ejs'),
     eCollList: [],
     removedECollList: [],
+    readOnly: false,
 
     dropdownVisible: false,
 
@@ -53,6 +54,7 @@
 
     hideSmartGraphOptions: function () {
       $('#row_general-numberOfShards').show();
+      $('#row_general-replicationFactor').show();
       $('#smartGraphInfo').hide();
       $('#row_new-numberOfShards').hide();
       $('#row_new-smartGraphAttribute').hide();
@@ -60,6 +62,7 @@
 
     showSmartGraphOptions: function () {
       $('#row_general-numberOfShards').hide();
+      $('#row_general-replicationFactor').hide();
       $('#smartGraphInfo').show();
       $('#row_new-numberOfShards').show();
       $('#row_new-smartGraphAttribute').show();
@@ -129,12 +132,14 @@
 
     addNewGraph: function (e) {
       e.preventDefault();
-      if (frontendConfig.isCluster && frontendConfig.isEnterprise) {
-        this.createEditGraphModal();
-      } else {
-        this.createEditGraphModal();
-        // hide tab entry
-        $('#tab-smartGraph').parent().remove();
+      if (!this.readOnly) {
+        if (frontendConfig.isCluster && frontendConfig.isEnterprise) {
+          this.createEditGraphModal();
+        } else {
+          this.createEditGraphModal();
+          // hide tab entry
+          $('#tab-smartGraph').parent().remove();
+        }
       }
     },
 
@@ -341,6 +346,7 @@
             }
           };
           arangoHelper.setCheckboxStatus('#graphManagementDropdown');
+          arangoHelper.checkDatabasePermissions(self.setReadOnly.bind(self));
         }
       });
 
@@ -348,6 +354,12 @@
         this.loadGraphViewer(name, refetch);
       }
       return this;
+    },
+
+    setReadOnly: function () {
+      this.readOnly = true;
+      $('#createGraph').parent().parent().addClass('disabled');
+      $('#createGraph').addClass('disabled');
     },
 
     setFromAndTo: function (e) {
@@ -652,6 +664,15 @@
               numberOfShards: $('#general-numberOfShards').val()
             };
           }
+          if ($('#general-replicationFactor').val().length > 0) {
+            if (newCollectionObject.options) {
+              newCollectionObject.options.replicationFactor = $('#general-replicationFactor').val();
+            } else {
+              newCollectionObject.options = {
+                replicationFactor: $('#general-replicationFactor').val()
+              };
+            }
+          }
         }
       }
 
@@ -840,6 +861,22 @@
                 ]
               )
             );
+            tableContent.push(
+              window.modalView.createTextEntry(
+                'general-replicationFactor',
+                'Replication factor',
+                '',
+                'Numeric value. Must be at least 1. Total number of copies of the data in the cluster.',
+                '',
+                false,
+                [
+                  {
+                    rule: Joi.string().allow('').optional().regex(/^[0-9]*$/),
+                    msg: 'Must be a number.'
+                  }
+                ]
+              )
+            );
           }
 
           if (self.counter === 0) {
@@ -887,7 +924,7 @@
               true,
               false,
               false,
-              10,
+              null,
               collList.sort(sorter)
             )
           );
@@ -901,7 +938,7 @@
               true,
               false,
               false,
-              10,
+              null,
               collList.sort(sorter)
             )
           );
@@ -919,7 +956,7 @@
           false,
           false,
           false,
-          10,
+          null,
           collList.sort(sorter)
         )
       );
@@ -998,15 +1035,15 @@
           tags: collList,
           showSearchBox: false,
           minimumResultsForSearch: -1,
-          width: '336px',
-          maximumSelectionSize: 10
+          width: '336px'
+          // maximumSelectionSize: 10
         });
         $('#toCollections' + this.counter).select2({
           tags: collList,
           showSearchBox: false,
           minimumResultsForSearch: -1,
-          width: '336px',
-          maximumSelectionSize: 10
+          width: '336px'
+          // maximumSelectionSize: 10
         });
         window.modalView.undelegateEvents();
         window.modalView.delegateEvents(this.events);

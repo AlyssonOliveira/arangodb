@@ -46,6 +46,10 @@
 #include <velocypack/Dumper.h>
 #include <velocypack/velocypack-aliases.h>
 
+#ifdef USE_ENTERPRISE
+#include "Enterprise/Transaction/IgnoreNoAccessAqlTransaction.h"
+#endif
+
 using namespace arangodb;
 using namespace arangodb::rest;
 using namespace arangodb::aql;
@@ -849,6 +853,9 @@ void RestAqlHandler::handleUseQuery(std::string const& operation, Query* query,
 
           // return warnings if present
           query->addWarningsToVelocyPackObject(answerBuilder);
+
+          // return the query to the registry
+          _queryRegistry->close(_vocbase, _qId);
 
           // delete the query from the registry
           _queryRegistry->destroy(_vocbase, _qId, errorCode);

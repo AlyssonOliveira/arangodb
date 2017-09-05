@@ -31,6 +31,7 @@
 #include <list>
 
 #include "Basics/Mutex.h"
+#include "Basics/SmallVector.h"
 #include "Basics/StringBuffer.h"
 #include "Basics/asio-helper.h"
 #include "Endpoint/ConnectionInfo.h"
@@ -43,6 +44,7 @@ class ConnectionStatistics;
 namespace rest {
 class SocketTask : virtual public Task {
   friend class HttpCommTask;
+
   explicit SocketTask(SocketTask const&) = delete;
   SocketTask& operator=(SocketTask const&) = delete;
 
@@ -59,8 +61,8 @@ class SocketTask : virtual public Task {
   void start();
 
  protected:
-  // caller will hold the _readLock
-  virtual bool processRead(double start_time) = 0;
+  // caller will hold the _lock
+  virtual bool processRead(double startTime) = 0;
   virtual void compactify() {}
 
   // This function is used during the protocol switch from http
@@ -122,32 +124,48 @@ class SocketTask : virtual public Task {
         _statistics = nullptr;
       }
     }
+    
+    void release(SocketTask* task) {
+      if (_buffer != nullptr) {
+        task->returnStringBuffer(_buffer);
+        _buffer = nullptr;
+      }
+
+      if (_statistics != nullptr) {
+        _statistics->release();
+        _statistics = nullptr;
+      }
+    }
   };
 
-  // will acquire the _writeLock
+  // will acquire the _lock
   void addWriteBuffer(WriteBuffer&);
 
-  // will acquire the _writeLock
+  // will acquire the _lock
   void closeStream();
-
-  // will acquire the _writeLock
-  void resetKeepAlive();
-
-  // will acquire the _writeLock
-  void cancelKeepAlive();
-
- protected:
-  ConnectionStatistics* _connectionStatistics;
-  ConnectionInfo _connectionInfo;
-  basics::StringBuffer _readBuffer; // needs _readLock
-
- private:
-  Mutex _readLock;
-
- private:
-  // caller must hold the _writeLock
+  
+  // caller must hold the _lock
   void closeStreamNoLock();
 
+  // caller must hold the _lock
+  void resetKeepAlive();
+
+  // caller must hold the _lock
+  void cancelKeepAlive();
+      
+  basics::StringBuffer* leaseStringBuffer(size_t length);
+  void returnStringBuffer(basics::StringBuffer*);
+  
+ protected:
+  Mutex _lock;
+  ConnectionStatistics* _connectionStatistics;
+  ConnectionInfo _connectionInfo;
+  basics::StringBuffer _readBuffer; // needs _lock
+  
+  SmallVector<basics::StringBuffer*, 32>::allocator_type::arena_type _stringBuffersArena;
+  SmallVector<basics::StringBuffer*, 32> _stringBuffers; // needs _lock
+
+ private:
   void writeWriteBuffer();
   bool completedWriteBuffer();
 
@@ -155,13 +173,11 @@ class SocketTask : virtual public Task {
   bool trySyncRead();
   bool processAll();
   void asyncReadSome();
+  bool abandon();
 
  private:
-  Mutex _writeLock;
   WriteBuffer _writeBuffer;
   std::list<WriteBuffer> _writeBuffers;
-
-  boost::asio::io_service::strand _strand;
 
   std::unique_ptr<Socket> _peer;
   boost::posix_time::milliseconds _keepAliveTimeout;
@@ -169,7 +185,7 @@ class SocketTask : virtual public Task {
   bool const _useKeepAliveTimer;
   bool _keepAliveTimerActive;
   bool _closeRequested;
-  std::atomic_bool _abandoned;
+  std::atomic<bool> _abandoned;
 
   bool _closedSend = false;
   bool _closedReceive = false;

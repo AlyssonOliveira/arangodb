@@ -128,7 +128,11 @@ fi
 
 CFLAGS="-g -fno-omit-frame-pointer"
 CXXFLAGS="-g -fno-omit-frame-pointer"
-LDFLAGS="-g"
+if test "${isCygwin}" == 1; then
+    LDFLAGS=""
+else
+    LDFLAGS="-g"
+fi
 V8_CFLAGS="-fno-omit-frame-pointer"
 V8_CXXFLAGS="-fno-omit-frame-pointer"
 V8_LDFLAGS=""
@@ -627,12 +631,16 @@ if test -n "${ENTERPRISE_GIT_URL}" ; then
 fi
 
 if test "${DOWNLOAD_STARTER}" == 1; then
-    # we utilize https://developer.github.com/v3/repos/ to get the newest release:
-    STARTER_REV=$(curl -s https://api.github.com/repos/arangodb-helper/arangodb/releases | \
-                         grep tag_name | \
-                         head -n 1 | \
-                         ${SED} -e "s;.*: ;;" -e 's;";;g' -e 's;,;;'
-               )
+    if test -f ${SRC}/STARTER_REV; then
+        STARTER_REV=$(cat ${SRC}/STARTER_REV)
+    else
+        # we utilize https://developer.github.com/v3/repos/ to get the newest release:
+        STARTER_REV=$(curl -s https://api.github.com/repos/arangodb-helper/arangodb/releases | \
+                             grep tag_name | \
+                             head -n 1 | \
+                             ${SED} -e "s;.*: ;;" -e 's;";;g' -e 's;,;;'
+                   )
+    fi
     STARTER_URL=$(curl -s "https://api.github.com/repos/arangodb-helper/arangodb/releases/tags/${STARTER_REV}" | \
                          grep browser_download_url | \
                          grep "${OSNAME}" | \
@@ -648,10 +656,18 @@ if test "${DOWNLOAD_STARTER}" == 1; then
         if test -f "${TN}"; then
             rm -f "${TN}"
         fi
-        curl -LO "${STARTER_URL}"
         FN=$(echo "${STARTER_URL}" |${SED} "s;.*/;;")
-        mv "${FN}" "${BUILD_DIR}/${TN}"
-        chmod a+x "${BUILD_DIR}/${TN}"
+
+        echo $FN
+        if ! test -f "${BUILD_DIR}/${FN}-${STARTER_REV}"; then
+            curl -LO "${STARTER_URL}"
+            cp "${FN}" "${BUILD_DIR}/${TN}"
+            touch "${BUILD_DIR}/${FN}-${STARTER_REV}"
+            chmod a+x "${BUILD_DIR}/${TN}"
+            echo "downloaded ${BUILD_DIR}/${FN}-${STARTER_REV} MD5: $(${MD5} < "${BUILD_DIR}/${TN}")"
+        else
+            echo "using already downloaded ${BUILD_DIR}/${FN}-${STARTER_REV} MD5: $(${MD5} < "${BUILD_DIR}/${TN}")"
+        fi
     fi
     CONFIGURE_OPTIONS+=("-DTHIRDPARTY_BIN=${BUILD_DIR}/${TN}")
 fi
